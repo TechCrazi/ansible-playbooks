@@ -1,0 +1,126 @@
+---
+- name: Check Windows connectivity and gather system details
+  hosts: all
+  gather_facts: false
+
+  # These apply to the Windows hosts
+  vars:
+    ansible_connection: winrm
+    ansible_port: 5985
+    ansible_winrm_scheme: http
+    ansible_winrm_transport: basic
+    ansible_winrm_message_encryption: never
+    ansible_winrm_server_cert_validation: ignore
+    ansible_winrm_operation_timeout_sec: 60
+    ansible_winrm_read_timeout_sec: 90
+
+  tasks:
+    - name: Starting connectivity check
+      ansible.builtin.debug:
+        msg:
+          - "Starting WinRM connectivity check for {{ inventory_hostname }}"
+          - "connection={{ ansible_connection }} transport={{ ansible_winrm_transport }} scheme={{ ansible_winrm_scheme }} port={{ ansible_port }}"
+
+    # Runner-side TCP test (must use local connection)
+    - name: Check TCP 5985 reachable from Semaphore runner
+      ansible.builtin.wait_for:
+        host: "{{ inventory_hostname }}"
+        port: 5985
+        timeout: 5
+      delegate_to: localhost
+      vars:
+        ansible_connection: local
+
+    # Runner-side HTTP probe (must use local connection)
+    - name: Check WinRM HTTP endpoint responds (/wsman) from runner
+      ansible.builtin.uri:
+        url: "http://{{ inventory_hostname }}:5985/wsman"
+        method: GET
+        return_content: false
+        timeout: 5
+        status_code: [200, 401, 405]
+      delegate_to: localhost
+      vars:
+        ansible_connection: local
+      register: wsman_http_probe
+      failed_when: false
+
+    - name: Show wsman probe result
+      ansible.builtin.debug:
+        var: wsman_http_probe
+
+    # Actual Windows WinRM test
+    - name: Test WinRM connectivity (ping)
+      ansible.windows.win_ping:
+      register: win_ping_result
+
+    - name: Show raw win_ping result (verbose)
+      ansible.builtin.debug:
+        var: win_ping_result
+        verbosity: 1
+
+    - name: Get system details + specs (CPU/RAM/Disk/NIC)
+      ansible.windows.win_shell: |
+        $os   = Get-CimInstance Win32_OperatingSystem
+        $cs   = Get-CimInstance Win32_ComputerSystem
+        $bios = Get-CimInstance Win32_BIOS
+        $cpu  = Get-CimInstance Win32_Processor | Select-Object -First 1
+        $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" |
+          Select-Object DeviceID,
+                        VolumeName,
+                        @{Name='SizeGB';FreeGB=0} # placeholder
+        $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object {
+          [PSCustomObject]@{
+            Drive     = $_.DeviceID
+            Label     = $_.VolumeName
+            FileSystem= $_.FileSystem
+            SizeGB    = [math]::Round($_.Size/1GB, 2)
+            FreeGB    = [math]::Round($_.FreeSpace/1GB, 2)
+            FreePct   = if ($_.Size -gt 0) { [math]::Round(($_.FreeSpace / $_.Size) * 100, 1) } else { $null }
+          }
+        }
+
+        $nics = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled=True" | ForEach-Object {
+          [PSCustomObject]@{
+            Description = $_.Description
+            MAC         = $_.MACAddress
+            IPv4        = ($_.IPAddress | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' })
+            Gateway     = $_.DefaultIPGateway
+            DNS         = $_.DNSServerSearchOrder
+          }
+        }
+
+        [PSCustomObject]@{
+          # Identity / OS
+          Hostname        = $env:COMPUTERNAME
+          Domain          = $cs.Domain
+          OS              = $os.Caption
+          OSVersion       = $os.Version
+          BuildNumber     = $os.BuildNumber
+          Architecture    = $os.OSArchitecture
+          LastBoot        = $os.LastBootUpTime
+
+          # Hardware
+          Manufacturer    = $cs.Manufacturer
+          Model           = $cs.Model
+          BIOSVersion     = ($bios.SMBIOSBIOSVersion -join ', ')
+
+          # CPU
+          CPUName         = $cpu.Name
+          CPUSockets      = @($cpu).Count
+          Cores           = $cpu.NumberOfCores
+          LogicalProcessors = $cpu.NumberOfLogicalProcessors
+          MaxClockMHz     = $cpu.MaxClockSpeed
+
+          # Memory
+          TotalMemoryGB   = [math]::Round($cs.TotalPhysicalMemory / 1GB, 2)
+
+          # Storage & Network
+          Disks           = $disks
+          NetworkAdapters = $nics
+        } | ConvertTo-Json -Depth 4
+      register: system_info
+
+    - name: Display system details
+      ansible.builtin.debug:
+        msg: "{{ system_info.stdout | from_json }}"

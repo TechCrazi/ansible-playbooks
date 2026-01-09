@@ -1,0 +1,118 @@
+---
+- name: Update packages inside all running Proxmox LXC containers
+  hosts: all
+  gather_facts: false
+  become: true
+  serial: 1  # process one Proxmox node at a time (remove if you want parallel)
+
+  vars:
+    apt_env:
+      DEBIAN_FRONTEND: noninteractive
+
+  tasks:
+    - name: List running containers (IDs only)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        pct list | awk 'NR>1 && $2=="running" {print $1}'
+      args:
+        executable: /bin/bash
+      register: running_ctids
+      changed_when: false
+
+    - name: Show running container IDs
+      ansible.builtin.debug:
+        msg: "Running CTIDs on {{ inventory_hostname }}: {{ running_ctids.stdout_lines | default([]) }}"
+
+    # -------------------------
+    # APT UPDATE (do not fail the whole play if one container errors)
+    # -------------------------
+    - name: Update apt cache in each container
+      ansible.builtin.command: >
+        pct exec {{ item }} -- env DEBIAN_FRONTEND=noninteractive apt-get update -y
+      environment: "{{ apt_env }}"
+      loop: "{{ running_ctids.stdout_lines }}"
+      when: running_ctids.stdout_lines | length > 0
+      register: apt_update_results
+      changed_when: false
+      failed_when: false
+
+    - name: Collect containers with apt update failures
+      ansible.builtin.set_fact:
+        ct_apt_update_failed: >-
+          {{
+            (apt_update_results.results | default([]))
+            | selectattr('rc', 'defined')
+            | selectattr('rc', 'ne', 0)
+            | map(attribute='item')
+            | list
+          }}
+      when: running_ctids.stdout_lines | length > 0
+
+    # -------------------------
+    # UPGRADE (only for containers whose apt update succeeded)
+    # -------------------------
+    - name: Upgrade packages in each container (dist-upgrade)
+      ansible.builtin.command: >
+        pct exec {{ item }} -- env DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade
+      environment: "{{ apt_env }}"
+      loop: >-
+        {{
+          running_ctids.stdout_lines
+          | difference(ct_apt_update_failed | default([]))
+        }}
+      when: running_ctids.stdout_lines | length > 0
+      register: apt_upgrade_results
+      changed_when: true
+      failed_when: false
+
+    - name: Collect containers with upgrade failures
+      ansible.builtin.set_fact:
+        ct_apt_upgrade_failed: >-
+          {{
+            (apt_upgrade_results.results | default([]))
+            | selectattr('rc', 'defined')
+            | selectattr('rc', 'ne', 0)
+            | map(attribute='item')
+            | list
+          }}
+      when: running_ctids.stdout_lines | length > 0
+
+    - name: Autoremove in each container (optional cleanup)
+      ansible.builtin.command: >
+        pct exec {{ item }} -- env DEBIAN_FRONTEND=noninteractive apt-get -y autoremove
+      environment: "{{ apt_env }}"
+      loop: >-
+        {{
+          running_ctids.stdout_lines
+          | difference(ct_apt_update_failed | default([]))
+        }}
+      when: running_ctids.stdout_lines | length > 0
+      changed_when: true
+      failed_when: false
+
+    # -------------------------
+    # REBOOT-REQUIRED CHECK (inside containers)
+    # -------------------------
+    - name: Check if reboot is required inside each container
+      ansible.builtin.command: >
+        pct exec {{ item }} -- test -f /var/run/reboot-required
+      loop: "{{ running_ctids.stdout_lines }}"
+      when: running_ctids.stdout_lines | length > 0
+      register: ct_reboot_checks
+      changed_when: false
+      failed_when: false
+
+    - name: Summary for this Proxmox host
+      ansible.builtin.debug:
+        msg:
+          - "=== Summary on {{ inventory_hostname }} ==="
+          - "Running CTIDs: {{ running_ctids.stdout_lines | default([]) }}"
+          - "APT update failed CTIDs: {{ ct_apt_update_failed | default([]) }}"
+          - "Upgrade failed CTIDs: {{ ct_apt_upgrade_failed | default([]) }}"
+          - >-
+            Containers requiring reboot: {{
+              (ct_reboot_checks.results | default([])
+                | selectattr('rc', 'equalto', 0)
+                | map(attribute='item')
+                | list)
+            }}
