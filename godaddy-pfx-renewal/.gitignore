@@ -15,3 +15,4 @@ secret.txt
 .DS_Store
 /certs/*
 /gd_pfx_work/*
+/.vs/*

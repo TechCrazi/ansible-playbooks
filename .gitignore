@@ -1,7 +1,13 @@
 ansible_notes.txt
 github_notes.txt
+secrets.json
 secrets.yml
 secrets.yaml
+secrets.txt
+secret.json
+secret.yaml
+secret.yml
+secret.txt
 *.csv
 *.log
 *.env
@@ -9,3 +15,4 @@ secrets.yaml
 .DS_Store
 /certs/*
 /gd_pfx_work/*
+/.vs/*
