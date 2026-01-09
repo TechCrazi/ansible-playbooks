@@ -1,0 +1,237 @@
+---
+- name: Read cert info and expiry status
+  shell: |
+    set -euo pipefail
+    tmp_cert="$(mktemp)"
+    tmp_err="$(mktemp)"
+    cleanup() { rm -f "$tmp_cert" "$tmp_err"; }
+    trap cleanup EXIT
+
+    if openssl pkcs12 -in "{{ pfx_path }}" -clcerts -nokeys -passin pass:"{{ pfx_password }}" -legacy -out "$tmp_cert" 2>"$tmp_err"; then
+      :
+    elif openssl pkcs12 -in "{{ pfx_path }}" -clcerts -nokeys -passin pass:"{{ pfx_password }}" -out "$tmp_cert" 2>"$tmp_err"; then
+      :
+    else
+      cat "$tmp_err" >&2
+      exit 1
+    fi
+
+    enddate="$(openssl x509 -in "$tmp_cert" -noout -enddate | sed 's/^notAfter=//')"
+    openssl x509 -in "$tmp_cert" -noout -subject -issuer -enddate
+    python3 -c $'import sys, datetime as dt\ns = sys.argv[1]\ntry:\n    exp = dt.datetime.strptime(s, "%b %d %H:%M:%S %Y %Z")\n    days = (exp - dt.datetime.utcnow()).days\n    print(f"DAYS_TO_EXP={days}")\nexcept Exception:\n    print("DAYS_TO_EXP=NA")' "$enddate"
+    serial="$(openssl x509 -in "$tmp_cert" -noout -serial | sed 's/^serial=//')"
+    not_before="$(openssl x509 -in "$tmp_cert" -noout -startdate | sed 's/^notBefore=//')"
+    sha1_fp="$(openssl x509 -in "$tmp_cert" -noout -fingerprint | sed 's/^SHA1 Fingerprint=//')"
+    sha256_fp="$(openssl x509 -in "$tmp_cert" -noout -fingerprint -sha256 | sed 's/^SHA256 Fingerprint=//')"
+    sig_alg="$(openssl x509 -in "$tmp_cert" -noout -text | awk -F': ' '/Signature Algorithm/ {print $2; exit}')"
+    pubkey_alg="$(openssl x509 -in "$tmp_cert" -noout -text | awk -F': ' '/Public Key Algorithm/ {print $2; exit}')"
+    pubkey_bits="$(openssl x509 -in "$tmp_cert" -noout -text | awk '/Public-Key:/{gsub(/[^0-9]/,"",$2); print $2; exit}')"
+    san_dns="$(openssl x509 -in "$tmp_cert" -noout -ext subjectAltName 2>/dev/null | awk 'BEGIN{out=""} /DNS:/ {gsub(/^[[:space:]]+/,""); out=out (out? ", " : "") $0} END{print out}' | sed 's/DNS://g')"
+    key_usage="$(openssl x509 -in "$tmp_cert" -noout -text | awk '/X509v3 Key Usage/{getline; gsub(/^[[:space:]]+/,""); print; exit}')"
+    ext_key_usage="$(openssl x509 -in "$tmp_cert" -noout -text | awk '/X509v3 Extended Key Usage/{getline; gsub(/^[[:space:]]+/,""); print; exit}')"
+    basic_constraints="$(openssl x509 -in "$tmp_cert" -noout -text | awk '/X509v3 Basic Constraints/{getline; gsub(/^[[:space:]]+/,""); print; exit}')"
+    echo "SERIAL=$serial"
+    echo "NOT_BEFORE=$not_before"
+    echo "NOT_AFTER=$enddate"
+    echo "SIG_ALG=$sig_alg"
+    echo "PUBKEY_ALG=$pubkey_alg"
+    echo "PUBKEY_BITS=$pubkey_bits"
+    echo "SHA1=$sha1_fp"
+    echo "SHA256=$sha256_fp"
+    echo "SAN_DNS=$san_dns"
+    echo "KEY_USAGE=$key_usage"
+    echo "EXT_KEY_USAGE=$ext_key_usage"
+    echo "BASIC_CONSTRAINTS=$basic_constraints"
+
+    leaf_subject="$(openssl x509 -in "$tmp_cert" -noout -subject | sed 's/^subject=//')"
+    tmp_all="$(mktemp)"
+    if openssl pkcs12 -in "{{ pfx_path }}" -nokeys -passin pass:"{{ pfx_password }}" -legacy -out "$tmp_all" 2>/dev/null; then
+      :
+    elif openssl pkcs12 -in "{{ pfx_path }}" -nokeys -passin pass:"{{ pfx_password }}" -out "$tmp_all" 2>/dev/null; then
+      :
+    else
+      rm -f "$tmp_all"
+      tmp_all=""
+    fi
+    if [ -n "$tmp_all" ] && [ -s "$tmp_all" ]; then
+      chain_pairs="$(openssl crl2pkcs7 -nocrl -certfile "$tmp_all" | openssl pkcs7 -print_certs -noout 2>/dev/null || true)"
+      if [ -n "$chain_pairs" ]; then
+        printf '%s\n' "$chain_pairs" | awk -v leaf="$leaf_subject" '
+          BEGIN{count=0;root=0;leaf_count=0;subjects="";issuers=""}
+          /^subject=/{sub(/^subject=/,"",$0); subj=$0; next}
+          /^issuer=/{sub(/^issuer=/,"",$0); iss=$0; count++; if(subj==iss){root++} if(subj==leaf){leaf_count++}
+            subjects=(subjects ? subjects "; " : "") subj;
+            issuers=(issuers ? issuers "; " : "") iss}
+          END{inter=count-root-leaf_count; if(inter<0){inter=0}
+            print "CHAIN_COUNT="count;
+            print "CHAIN_ROOT_COUNT="root;
+            print "CHAIN_INTERMEDIATE_COUNT="inter;
+            print "CHAIN_SUBJECTS="subjects;
+            print "CHAIN_ISSUERS="issuers;
+          }'
+      else
+        echo "CHAIN_COUNT=0"
+        echo "CHAIN_ROOT_COUNT=0"
+        echo "CHAIN_INTERMEDIATE_COUNT=0"
+        echo "CHAIN_SUBJECTS="
+        echo "CHAIN_ISSUERS="
+      fi
+      rm -f "$tmp_all"
+    else
+      echo "CHAIN_COUNT=0"
+      echo "CHAIN_ROOT_COUNT=0"
+      echo "CHAIN_INTERMEDIATE_COUNT=0"
+      echo "CHAIN_SUBJECTS="
+      echo "CHAIN_ISSUERS="
+    fi
+    if ! openssl x509 -in "$tmp_cert" -checkend 0 -noout; then
+      echo "EXPIRED"
+    elif ! openssl x509 -in "$tmp_cert" -checkend {{ (warn_days | int) * 86400 }} -noout; then
+      echo "EXPIRING_WITHIN_{{ warn_days }}_DAYS"
+    fi
+  args:
+    executable: /bin/bash
+  register: cert_info
+  changed_when: false
+  failed_when: false
+
+- name: Check for private key
+  shell: |
+    set -euo pipefail
+    if openssl pkcs12 -in "{{ pfx_path }}" -nocerts -nodes -passin pass:"{{ pfx_password }}" -legacy 2>/dev/null | grep -q "BEGIN .*PRIVATE KEY"; then
+      echo "HAS_PRIVATE_KEY"
+      exit 0
+    fi
+    if openssl pkcs12 -in "{{ pfx_path }}" -nocerts -nodes -passin pass:"{{ pfx_password }}" 2>/dev/null | grep -q "BEGIN .*PRIVATE KEY"; then
+      echo "HAS_PRIVATE_KEY"
+      exit 0
+    fi
+    echo "MISSING_PRIVATE_KEY"
+    exit 0
+  args:
+    executable: /bin/bash
+  register: key_check
+  changed_when: false
+  failed_when: false
+  when: cert_info.rc == 0
+
+- name: Parse cert details (raw lines)
+  set_fact:
+    subject_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^subject=') | list | first) | default('') }}"
+    issuer_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^issuer=') | list | first) | default('') }}"
+    enddate_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^notAfter=') | list | first) | default('') }}"
+    expired_flag: "{{ (cert_info.stdout_lines | default([]) | select('equalto','EXPIRED') | list | length > 0) }}"
+    expiring_label: "{{ (cert_info.stdout_lines | default([]) | select('search','^EXPIRING_WITHIN_') | list | first) | default('') }}"
+    days_to_exp_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^DAYS_TO_EXP=') | list | first) | default('') }}"
+    serial_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^SERIAL=') | list | first) | default('') }}"
+    not_before_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^NOT_BEFORE=') | list | first) | default('') }}"
+    not_after_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^NOT_AFTER=') | list | first) | default('') }}"
+    sig_alg_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^SIG_ALG=') | list | first) | default('') }}"
+    pubkey_alg_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^PUBKEY_ALG=') | list | first) | default('') }}"
+    pubkey_bits_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^PUBKEY_BITS=') | list | first) | default('') }}"
+    sha1_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^SHA1=') | list | first) | default('') }}"
+    sha256_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^SHA256=') | list | first) | default('') }}"
+    san_dns_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^SAN_DNS=') | list | first) | default('') }}"
+    key_usage_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^KEY_USAGE=') | list | first) | default('') }}"
+    ext_key_usage_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^EXT_KEY_USAGE=') | list | first) | default('') }}"
+    basic_constraints_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^BASIC_CONSTRAINTS=') | list | first) | default('') }}"
+    chain_count_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^CHAIN_COUNT=') | list | first) | default('') }}"
+    chain_root_count_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^CHAIN_ROOT_COUNT=') | list | first) | default('') }}"
+    chain_intermediate_count_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^CHAIN_INTERMEDIATE_COUNT=') | list | first) | default('') }}"
+    chain_subjects_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^CHAIN_SUBJECTS=') | list | first) | default('') }}"
+    chain_issuers_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^CHAIN_ISSUERS=') | list | first) | default('') }}"
+
+- name: Parse cert details (derived fields)
+  set_fact:
+    cn: "{{ (subject_line | regex_findall('CN\\s*=\\s*([^,]+)') | first) | default('') }}"
+    issuer_cn: "{{ (issuer_line | regex_findall('CN\\s*=\\s*([^,]+)') | first) | default('') }}"
+    issuer_vendor: "{{ 'GoDaddy' if (issuer_line is search('(?i)go\\s*daddy|starfield')) else 'Other' }}"
+    serial: "{{ (serial_line | regex_replace('^SERIAL=','')) | default('') }}"
+    not_before: "{{ (not_before_line | regex_replace('^NOT_BEFORE=','')) | default('') }}"
+    not_after: >-
+      {{
+        (not_after_line | regex_replace('^NOT_AFTER=','')) if ((not_after_line | default('')) | length > 0)
+        else (enddate_line | regex_replace('^notAfter=','') | default(''))
+      }}
+    days_to_exp: "{{ (days_to_exp_line | regex_replace('^DAYS_TO_EXP=','')) | default('') }}"
+    sig_alg: "{{ (sig_alg_line | regex_replace('^SIG_ALG=','')) | default('') }}"
+    pubkey_alg: "{{ (pubkey_alg_line | regex_replace('^PUBKEY_ALG=','')) | default('') }}"
+    pubkey_bits: "{{ (pubkey_bits_line | regex_replace('^PUBKEY_BITS=','')) | default('') }}"
+    sha1_fingerprint: "{{ (sha1_line | regex_replace('^SHA1=','')) | default('') }}"
+    sha256_fingerprint: "{{ (sha256_line | regex_replace('^SHA256=','')) | default('') }}"
+    san_dns: "{{ (san_dns_line | regex_replace('^SAN_DNS=','')) | default('') }}"
+    key_usage: "{{ (key_usage_line | regex_replace('^KEY_USAGE=','')) | default('') }}"
+    ext_key_usage: "{{ (ext_key_usage_line | regex_replace('^EXT_KEY_USAGE=','')) | default('') }}"
+    basic_constraints: "{{ (basic_constraints_line | regex_replace('^BASIC_CONSTRAINTS=','')) | default('') }}"
+    chain_count: "{{ (chain_count_line | regex_replace('^CHAIN_COUNT=','')) | default('0') }}"
+    chain_root_count: "{{ (chain_root_count_line | regex_replace('^CHAIN_ROOT_COUNT=','')) | default('0') }}"
+    chain_intermediate_count: "{{ (chain_intermediate_count_line | regex_replace('^CHAIN_INTERMEDIATE_COUNT=','')) | default('0') }}"
+    chain_subjects: "{{ (chain_subjects_line | regex_replace('^CHAIN_SUBJECTS=','')) | default('') }}"
+    chain_issuers: "{{ (chain_issuers_line | regex_replace('^CHAIN_ISSUERS=','')) | default('') }}"
+    cert_name: "{{ (cn | default('')) if ((cn | default('')) | length > 0) else (pfx_path | basename) }}"
+
+- name: Parse chain flags
+  set_fact:
+    has_root: "{{ (chain_root_count | int) > 0 }}"
+    has_intermediate: "{{ (chain_intermediate_count | int) > 0 }}"
+
+- name: Record results and issues
+  set_fact:
+    pfx_results: "{{ pfx_results + [ file_result ] }}"
+    pfx_issues: "{{ pfx_issues + file_issues }}"
+  vars:
+    file_result: >-
+      {{
+        {
+          'path': pfx_path,
+          'file_name': (pfx_path | basename),
+          'cert_name': cert_name | default(''),
+          'cn': cn | default(''),
+          'subject': subject_line | default(''),
+          'issuer': issuer_line | default(''),
+          'issuer_cn': issuer_cn | default(''),
+          'issuer_vendor': issuer_vendor | default(''),
+          'issuer_display': (
+            issuer_cn if (issuer_cn | default('') | length > 0)
+            else ((issuer_line | default('') | regex_replace('^issuer=','')) if (issuer_line | default('') | length > 0) else (issuer_vendor | default('Other')))
+          ),
+          'serial': serial | default(''),
+          'not_before': not_before | default(''),
+          'not_after': not_after | default(''),
+          'days_to_exp': days_to_exp | default(''),
+          'sig_alg': sig_alg | default(''),
+          'pubkey_alg': pubkey_alg | default(''),
+          'pubkey_bits': pubkey_bits | default(''),
+          'sha1_fingerprint': sha1_fingerprint | default(''),
+          'sha256_fingerprint': sha256_fingerprint | default(''),
+          'san_dns': san_dns | default(''),
+          'key_usage': key_usage | default(''),
+          'ext_key_usage': ext_key_usage | default(''),
+          'basic_constraints': basic_constraints | default(''),
+          'has_private_key': (((key_check | default({})).get('stdout','')) is search('HAS_PRIVATE_KEY')),
+          'read_ok': cert_info.rc == 0,
+          'expired': expired_flag | default(false),
+          'expiring_label': expiring_label | default(''),
+          'chain_count': chain_count | default('0'),
+          'chain_root_count': chain_root_count | default('0'),
+          'chain_intermediate_count': chain_intermediate_count | default('0'),
+          'has_root': has_root | default(false),
+          'has_intermediate': has_intermediate | default(false),
+          'chain_subjects': chain_subjects | default(''),
+          'chain_issuers': chain_issuers | default('')
+        }
+      }}
+    file_issues: >-
+      {{
+        ([] if cert_info.rc == 0 else [ { 'path': pfx_path, 'issue': 'cert_read_failed', 'detail': (cert_info.stderr | default('') | regex_replace('\\s+',' ')) } ])
+        +
+        ([] if (cert_info.rc != 0 or ((((key_check | default({})).get('stdout','')) is search('HAS_PRIVATE_KEY')))) else [ { 'path': pfx_path, 'issue': 'missing_private_key' } ])
+        +
+        ([] if (cert_info.rc != 0 or (expired_flag | default(false) == false and (expiring_label | default('') | length == 0))) else
+          [ { 'path': pfx_path, 'issue': ( 'expired' if (expired_flag | default(false)) else 'expiring_soon' ), 'detail': (expiring_label | default('')) } ])
+      }}
+
+- name: Show cert name and expiry
+  debug:
+    msg: "{{ pfx_path }} | CN={{ cn | default('') }} | NotAfter={{ not_after | default('') }}"
+  when: cert_info.rc == 0 and (show_each | default(false) | bool)

@@ -1,0 +1,45 @@
+---
+- name: Cleanup old PFX backups and work directory
+  hosts: localhost
+  gather_facts: false
+  vars:
+    pfx_dir: "./certs"
+    work_dir: "./gd_pfx_work"
+
+  tasks:
+    - name: Find .old PFX backups
+      find:
+        paths: "{{ pfx_dir }}"
+        patterns: "*.pfx.old"
+        file_type: file
+      register: old_pfx_files
+
+    - name: Remove .old PFX backups
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_pfx_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      when: old_pfx_files.matched | int > 0
+
+    - name: Find files in work directory
+      find:
+        paths: "{{ work_dir }}"
+        file_type: file
+      register: work_dir_files
+
+    - name: Remove files in work directory
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ work_dir_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      when: work_dir_files.matched | int > 0
+
+    - name: Cleanup summary
+      debug:
+        msg:
+          - "Removed old PFX backups: {{ old_pfx_files.matched | default(0) }}"
+          - "Removed files in work dir: {{ work_dir_files.matched | default(0) }}"

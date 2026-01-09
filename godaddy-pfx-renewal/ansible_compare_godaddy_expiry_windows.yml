@@ -1,0 +1,113 @@
+---
+- name: Compare local PFX expiry with GoDaddy (Windows)
+  hosts: windows
+  gather_facts: false
+  vars_files:
+    - "./secrets.yml"
+  vars:
+    pfx_dir: "C:\\certs"
+    show_skips: false
+    show_details: true
+    output_csv: "{{ pfx_dir }}\\pfx_compare_godaddy_expiry.csv"
+    write_csv: true
+
+  tasks:
+    - name: Find local PFX files
+      ansible.windows.win_find:
+        paths: "{{ pfx_dir }}"
+        patterns: "*.pfx"
+        file_type: file
+      register: pfx_files
+
+    - name: Fail if no pfx found
+      fail:
+        msg: "No .pfx files found in {{ pfx_dir }}"
+      when: pfx_files.matched | int == 0
+
+    - name: Query GoDaddy customer certificates (v2)
+      ansible.windows.win_uri:
+        url: "https://api.godaddy.com/v2/customers/{{ customer_id }}/certificates"
+        method: GET
+        headers:
+          Authorization: "sso-key {{ godaddy_api_key }}:{{ godaddy_api_secret }}"
+        return_content: true
+      register: gd_certs
+
+    - name: Parse GoDaddy cert list
+      set_fact:
+        gd_certs_json: "{{ gd_certs.content | from_json }}"
+
+    - name: Init comparison summary
+      set_fact:
+        renewal_ready: []
+        compare_results: []
+
+    - name: Process each PFX
+      include_tasks: pfx_compare_item_windows.yml
+      loop: "{{ pfx_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      vars:
+        pfx_path: "{{ item.path }}"
+
+    - name: Summarize comparison
+      set_fact:
+        ready_list: "{{ compare_results | selectattr('status','equalto','READY') | list }}"
+        not_ready_list: "{{ compare_results | selectattr('status','equalto','NOT_READY') | list }}"
+        no_gd_list: "{{ compare_results | selectattr('status','equalto','NO_GODADDY') | list }}"
+        skip_list: "{{ compare_results | selectattr('status','equalto','SKIP') | list }}"
+        unknown_list: "{{ compare_results | selectattr('status','equalto','UNKNOWN') | list }}"
+
+    - name: Comparison summary
+      debug:
+        msg: >-
+          {{
+            [
+              'Ready for renewal: ' ~ (ready_list | length | string),
+              'Not ready: ' ~ (not_ready_list | length | string),
+              'No GoDaddy cert: ' ~ (no_gd_list | length | string),
+              'Skipped: ' ~ (skip_list | length | string),
+              'Unknown: ' ~ (unknown_list | length | string)
+            ] | join(' | ')
+          }}
+
+    - name: Comparison details
+      debug:
+        msg: "{{ item.status }} | CN={{ item.cn }} | on_prem_exp={{ item.on_prem_exp }} | godaddy_exp={{ item.godaddy_exp }} | file={{ item.file }} | {{ item.detail }}"
+      loop: "{{ compare_results }}"
+      loop_control:
+        label: "{{ item.cn | default(item.file) }}"
+      when: show_details | bool
+
+    - name: Renewal ready list
+      debug:
+        msg: "{{ item }}"
+      loop: "{{ renewal_ready }}"
+      loop_control:
+        label: ""
+      when: renewal_ready | length > 0
+
+    - name: Build CSV lines
+      set_fact:
+        csv_lines: "{{ (csv_lines | default([])) + [ csv_line ] }}"
+      vars:
+        csv_line: >-
+          {{
+            '"' ~ ((item.file | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.cn | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.on_prem_exp | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.godaddy_exp | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.status | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.detail | default('')) | replace('"','""')) ~ '"'
+          }}
+      loop: "{{ compare_results }}"
+      loop_control:
+        label: "{{ item.cn | default(item.file) }}"
+      no_log: true
+      when: write_csv | default(true) | bool and (compare_results | length > 0)
+
+    - name: Write CSV output
+      ansible.windows.win_copy:
+        dest: "{{ output_csv }}"
+        content: "{{ 'file,cn,on_prem_exp,godaddy_exp,status,detail\r\n' ~ (csv_lines | default([]) | join('\r\n')) ~ '\r\n' }}"
+      when: write_csv | default(true) | bool and (compare_results | length > 0)

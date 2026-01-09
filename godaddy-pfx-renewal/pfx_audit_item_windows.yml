@@ -1,0 +1,232 @@
+---
+- name: Read cert info and expiry status
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $pfxPath = '{{ pfx_path }}'
+    $pwd = ConvertTo-SecureString '{{ pfx_password }}' -AsPlainText -Force
+    $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+    $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+    $cert.Import($pfxPath, $pwd, $flags)
+    $collection = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+    $collection.Import($pfxPath, $pwd, $flags)
+
+    function Format-Hash([byte[]]$bytes) {
+      return ($bytes | ForEach-Object { $_.ToString('X2') }) -join ':'
+    }
+
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+    $subject = $cert.Subject
+    $issuer = $cert.Issuer
+    $notAfter = $cert.NotAfter.ToUniversalTime().ToString("MMM dd HH:mm:ss yyyy 'GMT'", $culture)
+    $notBefore = $cert.NotBefore.ToUniversalTime().ToString("MMM dd HH:mm:ss yyyy 'GMT'", $culture)
+    $serial = $cert.SerialNumber
+    $sigAlg = $cert.SignatureAlgorithm.FriendlyName
+    $pubKeyAlg = $cert.PublicKey.Oid.FriendlyName
+    $pubKeyBits = ''
+    try { $pubKeyBits = $cert.PublicKey.Key.KeySize } catch { $pubKeyBits = '' }
+    $sha1 = Format-Hash([System.Security.Cryptography.SHA1]::Create().ComputeHash($cert.RawData))
+    $sha256 = Format-Hash([System.Security.Cryptography.SHA256]::Create().ComputeHash($cert.RawData))
+
+    $san = ''
+    $sanExt = $cert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.17' } | Select-Object -First 1
+    if ($sanExt) {
+      $rawSan = $sanExt.Format($false)
+      $dns = @()
+      foreach ($part in ($rawSan -split ',\s*')) {
+        if ($part -match '^DNS Name=') { $dns += ($part -replace '^DNS Name=','') }
+      }
+      $san = ($dns -join ', ')
+    }
+
+    $keyUsage = ''
+    $extKeyUsage = ''
+    $basicConstraints = ''
+    foreach ($ext in $cert.Extensions) {
+      if ($ext -is [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]) {
+        $keyUsage = $ext.KeyUsages.ToString()
+      } elseif ($ext -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]) {
+        $extKeyUsage = ($ext.EnhancedKeyUsages | ForEach-Object { $_.FriendlyName }) -join ', '
+      } elseif ($ext -is [System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]) {
+        $basicConstraints = $ext.Format($false)
+      }
+    }
+
+    $chainCount = $collection.Count
+    $rootCount = ($collection | Where-Object { $_.Subject -eq $_.Issuer }).Count
+    $leafSubject = $subject
+    $leafCount = ($collection | Where-Object { $_.Subject -eq $leafSubject }).Count
+    $intermediateCount = $chainCount - $rootCount - $leafCount
+    if ($intermediateCount -lt 0) { $intermediateCount = 0 }
+    $chainSubjects = ($collection | ForEach-Object { $_.Subject }) -join '; '
+    $chainIssuers = ($collection | ForEach-Object { $_.Issuer }) -join '; '
+    $daysToExp = [int]([math]::Floor(($cert.NotAfter.ToUniversalTime() - (Get-Date).ToUniversalTime()).TotalDays))
+
+    Write-Output "subject=$subject"
+    Write-Output "issuer=$issuer"
+    Write-Output "notAfter=$notAfter"
+    Write-Output "DAYS_TO_EXP=$daysToExp"
+    Write-Output "SERIAL=$serial"
+    Write-Output "NOT_BEFORE=$notBefore"
+    Write-Output "NOT_AFTER=$notAfter"
+    Write-Output "SIG_ALG=$sigAlg"
+    Write-Output "PUBKEY_ALG=$pubKeyAlg"
+    Write-Output "PUBKEY_BITS=$pubKeyBits"
+    Write-Output "SHA1=$sha1"
+    Write-Output "SHA256=$sha256"
+    Write-Output "SAN_DNS=$san"
+    Write-Output "KEY_USAGE=$keyUsage"
+    Write-Output "EXT_KEY_USAGE=$extKeyUsage"
+    Write-Output "BASIC_CONSTRAINTS=$basicConstraints"
+    Write-Output "CHAIN_COUNT=$chainCount"
+    Write-Output "CHAIN_ROOT_COUNT=$rootCount"
+    Write-Output "CHAIN_INTERMEDIATE_COUNT=$intermediateCount"
+    Write-Output "CHAIN_SUBJECTS=$chainSubjects"
+    Write-Output "CHAIN_ISSUERS=$chainIssuers"
+
+    if ($cert.NotAfter.ToUniversalTime() -lt (Get-Date).ToUniversalTime()) {
+      Write-Output "EXPIRED"
+    } elseif ($cert.NotAfter.ToUniversalTime() -lt (Get-Date).ToUniversalTime().AddDays({{ warn_days }})) {
+      Write-Output "EXPIRING_WITHIN_{{ warn_days }}_DAYS"
+    }
+  register: cert_info
+  changed_when: false
+  failed_when: false
+
+- name: Check for private key
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $pfxPath = '{{ pfx_path }}'
+    $pwd = ConvertTo-SecureString '{{ pfx_password }}' -AsPlainText -Force
+    $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+    $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+    $cert.Import($pfxPath, $pwd, $flags)
+    if ($cert.HasPrivateKey) {
+      Write-Output "HAS_PRIVATE_KEY"
+    } else {
+      Write-Output "MISSING_PRIVATE_KEY"
+    }
+  register: key_check
+  changed_when: false
+  failed_when: false
+  when: cert_info.rc == 0
+
+- name: Parse cert details (raw lines)
+  set_fact:
+    subject_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^subject=') | list | first) | default('') }}"
+    issuer_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^issuer=') | list | first) | default('') }}"
+    enddate_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^notAfter=') | list | first) | default('') }}"
+    expired_flag: "{{ (cert_info.stdout_lines | default([]) | select('equalto','EXPIRED') | list | length > 0) }}"
+    expiring_label: "{{ (cert_info.stdout_lines | default([]) | select('search','^EXPIRING_WITHIN_') | list | first) | default('') }}"
+    days_to_exp_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^DAYS_TO_EXP=') | list | first) | default('') }}"
+    serial_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^SERIAL=') | list | first) | default('') }}"
+    not_before_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^NOT_BEFORE=') | list | first) | default('') }}"
+    not_after_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^NOT_AFTER=') | list | first) | default('') }}"
+    sig_alg_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^SIG_ALG=') | list | first) | default('') }}"
+    pubkey_alg_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^PUBKEY_ALG=') | list | first) | default('') }}"
+    pubkey_bits_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^PUBKEY_BITS=') | list | first) | default('') }}"
+    sha1_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^SHA1=') | list | first) | default('') }}"
+    sha256_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^SHA256=') | list | first) | default('') }}"
+    san_dns_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^SAN_DNS=') | list | first) | default('') }}"
+    key_usage_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^KEY_USAGE=') | list | first) | default('') }}"
+    ext_key_usage_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^EXT_KEY_USAGE=') | list | first) | default('') }}"
+    basic_constraints_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^BASIC_CONSTRAINTS=') | list | first) | default('') }}"
+    chain_count_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^CHAIN_COUNT=') | list | first) | default('') }}"
+    chain_root_count_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^CHAIN_ROOT_COUNT=') | list | first) | default('') }}"
+    chain_intermediate_count_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^CHAIN_INTERMEDIATE_COUNT=') | list | first) | default('') }}"
+    chain_subjects_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^CHAIN_SUBJECTS=') | list | first) | default('') }}"
+    chain_issuers_line: "{{ (cert_info.stdout_lines | default([]) | select('search','^CHAIN_ISSUERS=') | list | first) | default('') }}"
+
+- name: Parse cert details (derived fields)
+  set_fact:
+    cn: "{{ (subject_line | regex_findall('CN\\s*=\\s*([^,]+)') | first) | default('') }}"
+    issuer_cn: "{{ (issuer_line | regex_findall('CN\\s*=\\s*([^,]+)') | first) | default('') }}"
+    issuer_vendor: "{{ 'GoDaddy' if (issuer_line is search('(?i)go\\s*daddy|starfield')) else 'Other' }}"
+    serial: "{{ (serial_line | regex_replace('^SERIAL=','')) | default('') }}"
+    not_before: "{{ (not_before_line | regex_replace('^NOT_BEFORE=','')) | default('') }}"
+    not_after: >-
+      {{
+        (not_after_line | regex_replace('^NOT_AFTER=','')) if ((not_after_line | default('')) | length > 0)
+        else (enddate_line | regex_replace('^notAfter=','') | default(''))
+      }}
+    days_to_exp: "{{ (days_to_exp_line | regex_replace('^DAYS_TO_EXP=','')) | default('') }}"
+    sig_alg: "{{ (sig_alg_line | regex_replace('^SIG_ALG=','')) | default('') }}"
+    pubkey_alg: "{{ (pubkey_alg_line | regex_replace('^PUBKEY_ALG=','')) | default('') }}"
+    pubkey_bits: "{{ (pubkey_bits_line | regex_replace('^PUBKEY_BITS=','')) | default('') }}"
+    sha1_fingerprint: "{{ (sha1_line | regex_replace('^SHA1=','')) | default('') }}"
+    sha256_fingerprint: "{{ (sha256_line | regex_replace('^SHA256=','')) | default('') }}"
+    san_dns: "{{ (san_dns_line | regex_replace('^SAN_DNS=','')) | default('') }}"
+    key_usage: "{{ (key_usage_line | regex_replace('^KEY_USAGE=','')) | default('') }}"
+    ext_key_usage: "{{ (ext_key_usage_line | regex_replace('^EXT_KEY_USAGE=','')) | default('') }}"
+    basic_constraints: "{{ (basic_constraints_line | regex_replace('^BASIC_CONSTRAINTS=','')) | default('') }}"
+    chain_count: "{{ (chain_count_line | regex_replace('^CHAIN_COUNT=','')) | default('0') }}"
+    chain_root_count: "{{ (chain_root_count_line | regex_replace('^CHAIN_ROOT_COUNT=','')) | default('0') }}"
+    chain_intermediate_count: "{{ (chain_intermediate_count_line | regex_replace('^CHAIN_INTERMEDIATE_COUNT=','')) | default('0') }}"
+    chain_subjects: "{{ (chain_subjects_line | regex_replace('^CHAIN_SUBJECTS=','')) | default('') }}"
+    chain_issuers: "{{ (chain_issuers_line | regex_replace('^CHAIN_ISSUERS=','')) | default('') }}"
+    cert_name: "{{ (cn | default('')) if ((cn | default('')) | length > 0) else (pfx_path | regex_replace('^.*\\\\','')) }}"
+
+- name: Parse chain flags
+  set_fact:
+    has_root: "{{ (chain_root_count | int) > 0 }}"
+    has_intermediate: "{{ (chain_intermediate_count | int) > 0 }}"
+
+- name: Record results and issues
+  set_fact:
+    pfx_results: "{{ pfx_results + [ file_result ] }}"
+    pfx_issues: "{{ pfx_issues + file_issues }}"
+  vars:
+    file_result: >-
+      {{
+        {
+          'path': pfx_path,
+          'file_name': (pfx_path | regex_replace('^.*\\\\','')),
+          'cert_name': cert_name | default(''),
+          'cn': cn | default(''),
+          'subject': subject_line | default(''),
+          'issuer': issuer_line | default(''),
+          'issuer_cn': issuer_cn | default(''),
+          'issuer_vendor': issuer_vendor | default(''),
+          'issuer_display': (
+            issuer_cn if (issuer_cn | default('') | length > 0)
+            else ((issuer_line | default('') | regex_replace('^issuer=','')) if (issuer_line | default('') | length > 0) else (issuer_vendor | default('Other')))
+          ),
+          'serial': serial | default(''),
+          'not_before': not_before | default(''),
+          'not_after': not_after | default(''),
+          'days_to_exp': days_to_exp | default(''),
+          'sig_alg': sig_alg | default(''),
+          'pubkey_alg': pubkey_alg | default(''),
+          'pubkey_bits': pubkey_bits | default(''),
+          'sha1_fingerprint': sha1_fingerprint | default(''),
+          'sha256_fingerprint': sha256_fingerprint | default(''),
+          'san_dns': san_dns | default(''),
+          'key_usage': key_usage | default(''),
+          'ext_key_usage': ext_key_usage | default(''),
+          'basic_constraints': basic_constraints | default(''),
+          'has_private_key': (((key_check | default({})).get('stdout','')) is search('HAS_PRIVATE_KEY')),
+          'read_ok': cert_info.rc == 0,
+          'expired': expired_flag | default(false),
+          'expiring_label': expiring_label | default(''),
+          'chain_count': chain_count | default('0'),
+          'chain_root_count': chain_root_count | default('0'),
+          'chain_intermediate_count': chain_intermediate_count | default('0'),
+          'has_root': has_root | default(false),
+          'has_intermediate': has_intermediate | default(false),
+          'chain_subjects': chain_subjects | default(''),
+          'chain_issuers': chain_issuers | default('')
+        }
+      }}
+    file_issues: >-
+      {{
+        ([] if cert_info.rc == 0 else [ { 'path': pfx_path, 'issue': 'cert_read_failed', 'detail': (cert_info.stderr | default('') | regex_replace('\\s+',' ')) } ])
+        +
+        ([] if (cert_info.rc != 0 or ((((key_check | default({})).get('stdout','')) is search('HAS_PRIVATE_KEY')))) else [ { 'path': pfx_path, 'issue': 'missing_private_key' } ])
+        +
+        ([] if (cert_info.rc != 0 or (expired_flag | default(false) == false and (expiring_label | default('') | length == 0))) else
+          [ { 'path': pfx_path, 'issue': ( 'expired' if (expired_flag | default(false)) else 'expiring_soon' ), 'detail': (expiring_label | default('')) } ])
+      }}
+
+- name: Show cert name and expiry
+  debug:
+    msg: "{{ pfx_path }} | CN={{ cn | default('') }} | NotAfter={{ not_after | default('') }}"
+  when: cert_info.rc == 0 and (show_each | default(false) | bool)

@@ -1,0 +1,137 @@
+---
+- name: Audit local PFX files on Windows for common issues
+  hosts: windows
+  gather_facts: false
+  vars_files:
+    - "./secrets.yml"
+  vars:
+    pfx_dir: "C:\\certs"
+    warn_days: 30
+    show_all: false
+    show_each: false
+    summary_header: false
+    output_csv: "{{ pfx_dir }}\\pfx_audit_summary.csv"
+    write_csv: true
+    print_summary: false
+
+  tasks:
+    - name: Find local PFX files
+      ansible.windows.win_find:
+        paths: "{{ pfx_dir }}"
+        patterns: "*.pfx"
+        file_type: file
+      register: pfx_files
+
+    - name: Fail if no pfx found
+      fail:
+        msg: "No .pfx files found in {{ pfx_dir }}"
+      when: pfx_files.matched | int == 0
+
+    - name: Init results
+      set_fact:
+        pfx_results: []
+        pfx_issues: []
+
+    - name: Process each PFX
+      include_tasks: pfx_audit_item_windows.yml
+      loop: "{{ pfx_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      vars:
+        pfx_path: "{{ item.path }}"
+
+    - name: Summary
+      debug:
+        msg:
+          - "Scanned: {{ pfx_files.matched }}"
+          - "Issues: {{ pfx_issues | length }}"
+          - "Warn days: {{ warn_days }}"
+
+    - name: Show issues
+      debug:
+        var: pfx_issues
+      when: pfx_issues | length > 0
+
+    - name: Show full results
+      debug:
+        var: pfx_results
+      when: show_all | bool
+
+    - name: Build detailed summary lines
+      set_fact:
+        summary_lines: "{{ (summary_lines | default([])) + [ summary_line ] }}"
+      vars:
+        summary_line: "{{ (item.file_name | default('')) ~ ' | ' ~ (item.cn | default('')) ~ ' | ' ~ (item.issuer_display | default('')) ~ ' | ' ~ (item.days_to_exp | default('N/A')) }}"
+      loop: "{{ pfx_results }}"
+      loop_control:
+        label: "{{ item.file_name | default(item.path) }}"
+      no_log: true
+      when: pfx_results | length > 0
+
+    - name: Build detailed summary text
+      set_fact:
+        summary_text: >-
+          {{
+            (
+              (['FILE_NAME | CN | ISSUER_NAME | DAYS_TO_EXP',
+                '--------- | -- | ----------- | -----------']
+               if (summary_header | default(false) | bool) else [])
+              + (summary_lines | default([]))
+            ) | join('\n')
+          }}
+      when: summary_lines is defined and (summary_lines | length > 0)
+
+    - name: Detailed summary block
+      debug:
+        msg: "{{ summary_text }}"
+      when: print_summary | default(false) | bool and summary_text is defined and (summary_text | length > 0)
+
+    - name: Build CSV lines
+      set_fact:
+        csv_lines: "{{ (csv_lines | default([])) + [ csv_line ] }}"
+      vars:
+        csv_line: >-
+          {{
+            '"' ~ ((item.file_name | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.path | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.cn | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.subject | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.issuer | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.issuer_cn | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.issuer_vendor | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.serial | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.not_before | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.not_after | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.days_to_exp | default('N/A')) | string | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.expired | default(false)) | string | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.expiring_label | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.sig_alg | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.pubkey_alg | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.pubkey_bits | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.sha1_fingerprint | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.sha256_fingerprint | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.san_dns | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.key_usage | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.ext_key_usage | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.basic_constraints | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.has_private_key | default(false)) | string | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.read_ok | default(false)) | string | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.chain_count | default('0')) | string | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.chain_root_count | default('0')) | string | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.chain_intermediate_count | default('0')) | string | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.has_root | default(false)) | string | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.has_intermediate | default(false)) | string | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.chain_subjects | default('')) | replace('"','""')) ~ '",' ~
+            '"' ~ ((item.chain_issuers | default('')) | replace('"','""')) ~ '"'
+          }}
+      loop: "{{ pfx_results }}"
+      loop_control:
+        label: "{{ item.file_name | default(item.path) }}"
+      no_log: true
+      when: write_csv | default(true) | bool and (pfx_results | length > 0)
+
+    - name: Write CSV output
+      ansible.windows.win_copy:
+        dest: "{{ output_csv }}"
+        content: "{{ 'file_name,path,cn,subject,issuer,issuer_cn,issuer_vendor,serial,not_before,not_after,days_to_exp,expired,expiring_label,sig_alg,pubkey_alg,pubkey_bits,sha1_fingerprint,sha256_fingerprint,san_dns,key_usage,ext_key_usage,basic_constraints,has_private_key,read_ok,chain_count,chain_root_count,chain_intermediate_count,has_root,has_intermediate,chain_subjects,chain_issuers\r\n' ~ (csv_lines | default([]) | join('\r\n')) ~ '\r\n' }}"
+      when: write_csv | default(true) | bool and (pfx_results | length > 0)

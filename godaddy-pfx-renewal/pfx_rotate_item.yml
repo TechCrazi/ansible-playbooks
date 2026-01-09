@@ -1,0 +1,262 @@
+---
+- name: Init per-file facts
+  set_fact:
+    old_subject_line: ""
+    old_issuer_line: ""
+    old_enddate_line: ""
+    old_cn: ""
+    old_notafter: ""
+    issuer_match: false
+    expiring_label: ""
+    expiring_soon: false
+    rotate_ok: false
+    chosen_cert: {}
+    rotation_status: "PENDING"
+    rotation_detail: "not evaluated"
+
+- name: Read cert info and expiry status
+  shell: |
+    set -euo pipefail
+    tmp_cert="$(mktemp)"
+    tmp_err="$(mktemp)"
+    cleanup() { rm -f "$tmp_cert" "$tmp_err"; }
+    trap cleanup EXIT
+
+    if openssl pkcs12 -in "{{ pfx_path }}" -clcerts -nokeys -passin pass:"{{ pfx_password }}" -legacy -out "$tmp_cert" 2>"$tmp_err"; then
+      :
+    elif openssl pkcs12 -in "{{ pfx_path }}" -clcerts -nokeys -passin pass:"{{ pfx_password }}" -out "$tmp_cert" 2>"$tmp_err"; then
+      :
+    else
+      cat "$tmp_err" >&2
+      exit 1
+    fi
+
+    openssl x509 -in "$tmp_cert" -noout -subject -issuer -enddate
+    if ! openssl x509 -in "$tmp_cert" -checkend {{ (renew_days | int) * 86400 }} -noout; then
+      echo "EXPIRING_WITHIN_{{ renew_days }}_DAYS"
+    fi
+  args:
+    executable: /bin/bash
+  register: old_cert_info
+  changed_when: false
+  failed_when: false
+
+- name: Mark cert read status
+  set_fact:
+    old_read_ok: "{{ old_cert_info.rc == 0 }}"
+
+- name: Parse cert details (raw lines)
+  set_fact:
+    old_subject_line: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^subject=') | list | first) | default('') }}"
+    old_issuer_line: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^issuer=') | list | first) | default('') }}"
+    old_enddate_line: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^notAfter=') | list | first) | default('') }}"
+    expiring_label: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^EXPIRING_WITHIN_') | list | first) | default('') }}"
+  when: old_read_ok
+
+- name: Parse cert details (derived fields)
+  set_fact:
+    old_cn: "{{ (old_subject_line | regex_findall('CN\\s*=\\s*([^,]+)') | first) | default('') }}"
+    old_notafter: "{{ old_enddate_line | regex_replace('^notAfter=','') | default('') }}"
+    issuer_match: "{{ old_issuer_line is search('(?i)go\\s*daddy|starfield') }}"
+    expiring_soon: "{{ (expiring_label | default('')) | length > 0 }}"
+  when: old_read_ok
+
+- name: Decide rotation eligibility
+  set_fact:
+    rotate_ok: "{{ old_read_ok and (old_cn | default('') | length > 0) and (issuer_match | default(false)) and ((expiring_soon | default(false)) or (force_rebuild_chain | default(false) | bool)) }}"
+  when: old_read_ok
+
+- name: Mark skip reason - cert read failed
+  set_fact:
+    rotation_status: "SKIP"
+    rotation_detail: "cert read failed: {{ old_cert_info.stderr | default('') | regex_replace('\\s+',' ') }}"
+  when: not old_read_ok
+
+- name: Mark skip reason - issuer not GoDaddy/Starfield
+  set_fact:
+    rotation_status: "SKIP"
+    rotation_detail: "issuer not GoDaddy/Starfield: {{ old_issuer_line | default('') }}"
+  when: old_read_ok and not issuer_match
+
+- name: Mark skip reason - not expiring soon
+  set_fact:
+    rotation_status: "SKIP"
+    rotation_detail: "not expiring within {{ renew_days }} days (notAfter={{ old_notafter }})"
+  when: old_read_ok and issuer_match and not expiring_soon and not (force_rebuild_chain | default(false) | bool)
+
+- name: Mark skip reason - CN not parsed
+  set_fact:
+    rotation_status: "SKIP"
+    rotation_detail: "CN could not be parsed"
+  when: old_read_ok and issuer_match and ((expiring_soon | default(false)) or (force_rebuild_chain | default(false) | bool)) and (old_cn | length == 0)
+
+- name: Mark eligible for GoDaddy check
+  set_fact:
+    rotation_status: "CHECK_GODADDY"
+    rotation_detail: >-
+      {{
+        "checking GoDaddy for CN=" ~ old_cn ~
+        ( " (force_rebuild_chain=true)" if (force_rebuild_chain | default(false) | bool) else
+          " (expiring within " ~ renew_days ~ " days)" )
+      }}
+  when: rotate_ok
+
+- name: Query GoDaddy customer certificates (v2)
+  uri:
+    url: "https://api.godaddy.com/v2/customers/{{ customer_id }}/certificates"
+    method: GET
+    headers:
+      Authorization: "sso-key {{ godaddy_api_key }}:{{ godaddy_api_secret }}"
+    return_content: true
+  register: gd_certs
+  when: rotate_ok
+
+- name: Pick best matching ISSUED cert for CN (prefer max validEndAt)
+  set_fact:
+    chosen_cert: >-
+      {{
+        (gd_certs.json.certificates
+          | selectattr('commonName','equalto', old_cn)
+          | selectattr('status','equalto','ISSUED')
+          | sort(attribute='validEndAt')
+          | list
+        ) | last | default({})
+      }}
+  when: rotate_ok
+
+- name: Skip if not found in GoDaddy
+  set_fact:
+    rotation_status: "NO_NEW_CERT"
+    rotation_detail: "checked GoDaddy: no ISSUED cert found for CN={{ old_cn }}"
+  when: rotate_ok and chosen_cert == {}
+
+- name: Mark found issued cert
+  set_fact:
+    rotation_status: "FOUND_CERT"
+    rotation_detail: "found ISSUED GoDaddy cert id={{ chosen_cert.certificateId | default('') }} validEndAt={{ chosen_cert.validEndAt | default('') }}"
+  when: rotate_ok and chosen_cert != {}
+
+- name: Download bundle (GoDaddy v1 download that you already use)
+  get_url:
+    url: "https://api.godaddy.com/v1/certificates/{{ chosen_cert.certificateId }}/download"
+    headers:
+      Authorization: "sso-key {{ godaddy_api_key }}:{{ godaddy_api_secret }}"
+    dest: "{{ work_dir }}/{{ old_cn }}_cert-bundle.json"
+    mode: "0600"
+  when: rotate_ok and chosen_cert != {}
+
+- name: Write PEM pieces from bundle
+  shell: |
+    set -euo pipefail
+    jq -r '.pems.certificate' "{{ work_dir }}/{{ old_cn }}_cert-bundle.json" > "{{ work_dir }}/server.crt"
+    jq -r '.pems.root'        "{{ work_dir }}/{{ old_cn }}_cert-bundle.json" > "{{ work_dir }}/root.crt"
+    jq -r '.pems.intermediate' "{{ work_dir }}/{{ old_cn }}_cert-bundle.json" > "{{ work_dir }}/intermediate.crt"
+    jq -r '.pems.cross // empty' "{{ work_dir }}/{{ old_cn }}_cert-bundle.json" > "{{ work_dir }}/cross.crt"
+    cat "{{ work_dir }}/intermediate.crt" > "{{ work_dir }}/gd_chain.pem"
+    if [ -s "{{ work_dir }}/cross.crt" ]; then
+      cat "{{ work_dir }}/cross.crt" >> "{{ work_dir }}/gd_chain.pem"
+    fi
+    cat "{{ work_dir }}/root.crt" >> "{{ work_dir }}/gd_chain.pem"
+  args:
+    executable: /bin/bash
+  when: rotate_ok and chosen_cert != {}
+
+- name: Inspect downloaded cert expiry
+  shell: |
+    set -euo pipefail
+    openssl x509 -in "{{ work_dir }}/server.crt" -noout -enddate -subject
+  register: new_cert_info
+  when: rotate_ok and chosen_cert != {}
+
+- name: Check cross cert size
+  stat:
+    path: "{{ work_dir }}/cross.crt"
+  register: cross_stat
+  when: rotate_ok and chosen_cert != {}
+
+- name: Warn if no cross certificate provided
+  debug:
+    msg: "Warning: No cross certificate provided by GoDaddy for CN={{ old_cn }} (file={{ pfx_path }})"
+  when:
+    - rotate_ok
+    - chosen_cert != {}
+    - (cross_stat.stat.size | default(0) | int == 0)
+
+- name: (Optional safety) Fail if downloaded cert CN doesn't match
+  fail:
+    msg: "Downloaded cert CN mismatch for {{ pfx_path }}. Output: {{ new_cert_info.stdout }}"
+  when:
+    - rotate_ok
+    - chosen_cert != {}
+    - ("cn=" ~ (old_cn | lower)) not in (new_cert_info.stdout | lower)
+
+- name: Backup old PFX
+  copy:
+    src: "{{ pfx_path }}"
+    dest: "{{ pfx_path }}.old"
+    remote_src: true
+    mode: preserve
+  when: rotate_ok and chosen_cert != {}
+
+- name: Extract private key from old PFX
+  shell: |
+    set -euo pipefail
+    openssl pkcs12 -in "{{ pfx_path }}.old" -nodes -legacy \
+      -out "{{ work_dir }}/old.key" -passin pass:"{{ pfx_password }}"
+  args:
+    executable: /bin/bash
+  when: rotate_ok and chosen_cert != {}
+
+- name: Decide output filename (wildcard CN => _.domain)
+  set_fact:
+    safe_cn: "{{ (old_cn | regex_replace('^\\*', '_')) }}"
+    out_pfx: "{{ pfx_dir }}/{{ (old_cn | regex_replace('^\\*', '_')) }}.pfx"
+  when: rotate_ok and chosen_cert != {}
+
+- name: Build new PFX
+  shell: |
+    set -euo pipefail
+    openssl pkcs12 -macalg SHA1 -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -export \
+      -out "{{ out_pfx }}" \
+      -inkey "{{ work_dir }}/old.key" \
+      -in "{{ work_dir }}/server.crt" \
+      -certfile "{{ work_dir }}/gd_chain.pem" \
+      -CSP "Microsoft Enhanced RSA and AES Cryptographic Provider" \
+      -passout pass:"{{ pfx_password }}"
+  args:
+    executable: /bin/bash
+  when: rotate_ok and chosen_cert != {}
+
+- name: Validate new PFX expiry
+  shell: |
+    set -euo pipefail
+    openssl pkcs12 -in "{{ out_pfx }}" -clcerts -nokeys -passin pass:"{{ pfx_password }}" \
+      | openssl x509 -noout -subject -enddate
+  register: final_check
+  when: rotate_ok and chosen_cert != {}
+
+- name: Mark rotation complete
+  set_fact:
+    rotation_status: "ROTATED"
+    rotation_detail: "rebuilt PFX at {{ out_pfx }}"
+  when: rotate_ok and chosen_cert != {}
+
+- name: Add to rotation summary
+  set_fact:
+    rotated_certs: "{{ (rotated_certs | default([])) + [ summary_line ] }}"
+  vars:
+    summary_line: "{{ pfx_path }} | CN={{ old_cn }} | out={{ out_pfx }} | new={{ final_check.stdout_lines | join(' | ') }}"
+  when: rotation_status == "ROTATED"
+
+- name: Show result
+  debug:
+    msg:
+      - "Input: {{ pfx_path }}"
+      - "CN: {{ old_cn }} -> output: {{ out_pfx }}"
+      - "Old: {{ old_notafter }}"
+      - "New: {{ final_check.stdout_lines | join(' | ') }}"
+  when: rotate_ok and chosen_cert != {}
+
+- name: Rotation summary
+  debug:
+    msg: "{{ pfx_path }} | CN={{ old_cn | default('') }} | {{ rotation_status }} | {{ rotation_detail }}"

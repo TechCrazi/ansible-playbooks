@@ -1,0 +1,43 @@
+---
+- name: Cleanup old PFX backups and work files (Windows)
+  hosts: windows
+  gather_facts: false
+  vars:
+    pfx_dir: "C:\\certs"
+    work_dir: "C:\\gd_pfx_work"
+
+  tasks:
+    - name: Ensure work dir exists
+      ansible.windows.win_file:
+        path: "{{ work_dir }}"
+        state: directory
+
+    - name: Find old PFX backups
+      ansible.windows.win_find:
+        paths: "{{ pfx_dir }}"
+        patterns: "*.pfx.old"
+        file_type: file
+      register: old_pfx_files
+
+    - name: Remove old PFX backups
+      ansible.windows.win_file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_pfx_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Find work dir files
+      ansible.windows.win_find:
+        paths: "{{ work_dir }}"
+        patterns: "*"
+        file_type: file
+      register: work_files
+
+    - name: Remove work dir files
+      ansible.windows.win_file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ work_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"

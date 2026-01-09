@@ -1,0 +1,11 @@
+ansible_notes.txt
+github_notes.txt
+secrets.yml
+secrets.yaml
+*.csv
+*.log
+*.env
+*.txt
+.DS_Store
+/certs/*
+/gd_pfx_work/*

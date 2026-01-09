@@ -1,0 +1,191 @@
+---
+- name: Init compare status
+  set_fact:
+    compare_status: "PENDING"
+    compare_detail: ""
+    chosen_cert: {}
+    old_subject_line: ""
+    old_enddate_line: ""
+    old_cn: ""
+    old_notafter: ""
+    ready_line: ""
+    ready_flag: "unknown"
+
+- name: Read CN and notAfter from PFX
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $pfxPath = '{{ pfx_path }}'
+    $pwd = ConvertTo-SecureString '{{ pfx_password }}' -AsPlainText -Force
+    $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+    $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+    $cert.Import($pfxPath, $pwd, $flags)
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+    $subject = $cert.Subject
+    $notAfter = $cert.NotAfter.ToUniversalTime().ToString("MMM dd HH:mm:ss yyyy 'GMT'", $culture)
+    $cn = ''
+    foreach ($part in ($subject -split ',\s*')) {
+      if ($part -match '^CN=') { $cn = ($part -replace '^CN=',''); break }
+    }
+    Write-Output "SUBJECT=$subject"
+    Write-Output "NOT_AFTER=$notAfter"
+    Write-Output "CN=$cn"
+  register: old_cert_info
+  changed_when: false
+  failed_when: false
+
+- name: Parse local cert fields (raw lines)
+  set_fact:
+    old_subject_line: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^SUBJECT=') | list | first) | default('') }}"
+    old_enddate_line: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^NOT_AFTER=') | list | first) | default('') }}"
+    old_subject_raw: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^subject=') | list | first) | default('') }}"
+    old_enddate_raw: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^notAfter=') | list | first) | default('') }}"
+    old_cn_line: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^CN=') | list | first) | default('') }}"
+  when: old_cert_info.rc == 0
+
+- name: Parse local cert fields (derived)
+  set_fact:
+    old_cn_line_value: "{{ (old_cn_line | regex_replace('^CN=','')) | default('') }}"
+    old_cn_subject_line_value: "{{ ((old_subject_line | regex_replace('^SUBJECT=','')) | regex_findall('CN\\s*=\\s*([^,]+)') | first) | default('') }}"
+    old_cn_subject_raw_value: "{{ ((old_subject_raw | regex_replace('^subject=','')) | regex_findall('CN\\s*=\\s*([^,]+)') | first) | default('') }}"
+    old_notafter: >-
+      {{
+        (old_enddate_line | regex_replace('^NOT_AFTER=','')) if ((old_enddate_line | default('')) | length > 0)
+        else (old_enddate_raw | regex_replace('^notAfter=','') | default(''))
+      }}
+  when: old_cert_info.rc == 0
+
+- name: Choose best CN value
+  set_fact:
+    old_cn: >-
+      {{
+        old_cn_line_value if ((old_cn_line_value | default('')) | length > 0)
+        else (old_cn_subject_line_value if ((old_cn_subject_line_value | default('')) | length > 0) else (old_cn_subject_raw_value | default('')))
+      }}
+  when: old_cert_info.rc == 0
+
+- name: Mark skip reason - read failed
+  set_fact:
+    compare_status: "SKIP"
+    compare_detail: "cert read failed: {{ old_cert_info.stderr | default('') | regex_replace('\\s+',' ') }}"
+  when: old_cert_info.rc != 0
+
+- name: Mark skip reason - missing CN or notAfter
+  set_fact:
+    compare_status: "SKIP"
+    compare_detail: "CN or notAfter could not be parsed"
+  when:
+    - old_cert_info.rc == 0
+    - (old_cn | length == 0) or (old_notafter | length == 0)
+
+- name: Pick best matching ISSUED cert for CN (prefer max validEndAt)
+  set_fact:
+    chosen_cert: >-
+      {{
+        (gd_certs_json.certificates
+          | selectattr('commonName','equalto', old_cn)
+          | selectattr('status','equalto','ISSUED')
+          | sort(attribute='validEndAt')
+          | list
+        ) | last | default({})
+      }}
+  when:
+    - old_cn | length > 0
+    - old_cert_info.rc == 0
+
+- name: Skip if not found in GoDaddy
+  set_fact:
+    compare_status: "NO_GODADDY"
+    compare_detail: "no ISSUED GoDaddy cert found for CN={{ old_cn }}"
+  when:
+    - compare_status == "PENDING"
+    - old_cn | length > 0
+    - old_cert_info.rc == 0
+    - chosen_cert == {}
+
+- name: Show skip reason (optional)
+  debug:
+    msg: "Skipping {{ pfx_path }}: {{ compare_detail }}"
+  when: compare_status == "SKIP" and (show_skips | default(false) | bool)
+
+- name: Compare local vs GoDaddy expiry
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $local = '{{ old_notafter }}'
+    $remote = '{{ chosen_cert.validEndAt | default('') }}'
+    $ready = 'unknown'
+    try {
+      $culture = [System.Globalization.CultureInfo]::InvariantCulture
+      $l = [datetime]::ParseExact($local, 'MMM dd HH:mm:ss yyyy GMT', $culture)
+      $r = $remote -replace 'Z', '+00:00'
+      try {
+        $rdt = [datetime]::Parse($r, $culture)
+      } catch {
+        $rdt = $null
+      }
+      if ($rdt -ne $null) {
+        $ready = $(if ($l -lt $rdt.ToUniversalTime()) { 'true' } else { 'false' })
+      }
+    } catch {
+      $ready = 'unknown'
+    }
+    Write-Output "READY=$ready"
+  register: compare_info
+  changed_when: false
+  failed_when: false
+  when:
+    - compare_status == "PENDING"
+    - old_cn | length > 0
+    - old_cert_info.rc == 0
+    - chosen_cert != {}
+
+- name: Parse comparison result
+  set_fact:
+    ready_line: "{{ (compare_info.stdout_lines | default([]) | select('search','^READY=') | list | first) | default('') }}"
+  when: compare_info is defined
+
+- name: Parse ready flag
+  set_fact:
+    ready_flag: "{{ (ready_line | regex_replace('^READY=','')) | default('') }}"
+  when: ready_line is defined
+
+- name: Default comparison result
+  set_fact:
+    ready_flag: "unknown"
+  when: ready_flag is not defined or (ready_flag | length == 0)
+
+- name: Set compare status from result
+  set_fact:
+    compare_status: "{{ 'READY' if ready_flag == 'true' else ('NOT_READY' if ready_flag == 'false' else 'UNKNOWN') }}"
+    compare_detail: >-
+      {{
+        'GoDaddy expiry is later' if ready_flag == 'true'
+        else ('Local expiry is not older than GoDaddy' if ready_flag == 'false'
+        else 'Unable to compare expirations')
+      }}
+  when: compare_status == "PENDING" and (chosen_cert != {})
+
+- name: Record renewal ready
+  set_fact:
+    renewal_ready: "{{ (renewal_ready | default([])) + [ summary_line ] }}"
+  vars:
+    summary_line: >-
+      {{
+        "CN=" ~ old_cn ~
+        " | on_prem_exp=" ~ old_notafter ~
+        " | godaddy_exp=" ~ (chosen_cert.validEndAt | default('')) ~
+        " | file=" ~ pfx_path
+      }}
+  when:
+    - ready_flag | default('unknown') == 'true'
+
+- name: Record compare result
+  set_fact:
+    compare_results: "{{ (compare_results | default([])) + [ compare_item ] }}"
+  vars:
+    compare_item:
+      file: "{{ pfx_path }}"
+      cn: "{{ old_cn | default('') }}"
+      on_prem_exp: "{{ old_notafter | default('') }}"
+      godaddy_exp: "{{ chosen_cert.validEndAt | default('') }}"
+      status: "{{ compare_status }}"
+      detail: "{{ compare_detail }}"

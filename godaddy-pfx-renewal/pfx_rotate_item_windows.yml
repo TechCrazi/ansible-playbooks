@@ -1,0 +1,245 @@
+---
+- name: Init per-file facts
+  set_fact:
+    old_subject_line: ""
+    old_issuer_line: ""
+    old_enddate_line: ""
+    old_cn: ""
+    old_notafter: ""
+    issuer_match: false
+    expiring_label: ""
+    expiring_soon: false
+    rotate_ok: false
+    chosen_cert: {}
+    rotation_status: "PENDING"
+    rotation_detail: "not evaluated"
+
+- name: Read cert info and expiry status
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $pfxPath = '{{ pfx_path }}'
+    $pwd = ConvertTo-SecureString '{{ pfx_password }}' -AsPlainText -Force
+    $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+    $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+    $cert.Import($pfxPath, $pwd, $flags)
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+    $subject = $cert.Subject
+    $issuer = $cert.Issuer
+    $notAfter = $cert.NotAfter.ToUniversalTime().ToString("MMM dd HH:mm:ss yyyy 'GMT'", $culture)
+    Write-Output "subject=$subject"
+    Write-Output "issuer=$issuer"
+    Write-Output "notAfter=$notAfter"
+    if ($cert.NotAfter.ToUniversalTime() -lt (Get-Date).ToUniversalTime().AddDays({{ renew_days }})) {
+      Write-Output "EXPIRING_WITHIN_{{ renew_days }}_DAYS"
+    }
+  register: old_cert_info
+  changed_when: false
+  failed_when: false
+
+- name: Mark cert read status
+  set_fact:
+    old_read_ok: "{{ old_cert_info.rc == 0 }}"
+
+- name: Parse cert details (raw lines)
+  set_fact:
+    old_subject_line: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^subject=') | list | first) | default('') }}"
+    old_issuer_line: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^issuer=') | list | first) | default('') }}"
+    old_enddate_line: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^notAfter=') | list | first) | default('') }}"
+    expiring_label: "{{ (old_cert_info.stdout_lines | default([]) | select('search','^EXPIRING_WITHIN_') | list | first) | default('') }}"
+  when: old_read_ok
+
+- name: Parse cert details (derived fields)
+  set_fact:
+    old_cn: "{{ (old_subject_line | regex_findall('CN\\s*=\\s*([^,]+)') | first) | default('') }}"
+    old_notafter: "{{ old_enddate_line | regex_replace('^notAfter=','') | default('') }}"
+    issuer_match: "{{ old_issuer_line is search('(?i)go\\s*daddy|starfield') }}"
+    expiring_soon: "{{ (expiring_label | default('')) | length > 0 }}"
+  when: old_read_ok
+
+- name: Set safe CN for filenames
+  set_fact:
+    safe_cn: "{{ (old_cn | regex_replace('[^A-Za-z0-9._-]', '_')) }}"
+  when: old_read_ok
+
+- name: Decide rotation eligibility
+  set_fact:
+    rotate_ok: "{{ old_read_ok and (old_cn | default('') | length > 0) and (issuer_match | default(false)) and ((expiring_soon | default(false)) or (force_rebuild_chain | default(false) | bool)) }}"
+  when: old_read_ok
+
+- name: Mark skip reason - cert read failed
+  set_fact:
+    rotation_status: "SKIP"
+    rotation_detail: "cert read failed: {{ old_cert_info.stderr | default('') | regex_replace('\\s+',' ') }}"
+  when: not old_read_ok
+
+- name: Mark skip reason - issuer not GoDaddy/Starfield
+  set_fact:
+    rotation_status: "SKIP"
+    rotation_detail: "issuer not GoDaddy/Starfield: {{ old_issuer_line | default('') }}"
+  when: old_read_ok and not issuer_match
+
+- name: Mark skip reason - not expiring soon
+  set_fact:
+    rotation_status: "SKIP"
+    rotation_detail: "not expiring within {{ renew_days }} days (notAfter={{ old_notafter }})"
+  when: old_read_ok and issuer_match and not expiring_soon and not (force_rebuild_chain | default(false) | bool)
+
+- name: Mark skip reason - CN not parsed
+  set_fact:
+    rotation_status: "SKIP"
+    rotation_detail: "CN could not be parsed"
+  when: old_read_ok and issuer_match and ((expiring_soon | default(false)) or (force_rebuild_chain | default(false) | bool)) and (old_cn | length == 0)
+
+- name: Mark eligible for GoDaddy check
+  set_fact:
+    rotation_status: "CHECK_GODADDY"
+    rotation_detail: >-
+      {{
+        "checking GoDaddy for CN=" ~ old_cn ~
+        ( " (force_rebuild_chain=true)" if (force_rebuild_chain | default(false) | bool) else
+          " (expiring within " ~ renew_days ~ " days)" )
+      }}
+  when: rotate_ok
+
+- name: Query GoDaddy customer certificates (v2)
+  ansible.windows.win_uri:
+    url: "https://api.godaddy.com/v2/customers/{{ customer_id }}/certificates"
+    method: GET
+    headers:
+      Authorization: "sso-key {{ godaddy_api_key }}:{{ godaddy_api_secret }}"
+    return_content: true
+  register: gd_certs
+  when: rotate_ok
+
+- name: Parse GoDaddy cert list
+  set_fact:
+    gd_certs_json: "{{ gd_certs.content | from_json }}"
+  when: rotate_ok
+
+- name: Pick best matching ISSUED cert for CN (prefer max validEndAt)
+  set_fact:
+    chosen_cert: >-
+      {{
+        (gd_certs_json.certificates
+          | selectattr('commonName','equalto', old_cn)
+          | selectattr('status','equalto','ISSUED')
+          | sort(attribute='validEndAt')
+          | list
+        ) | last | default({})
+      }}
+  when: rotate_ok
+
+- name: Skip if not found in GoDaddy
+  set_fact:
+    rotation_status: "NO_NEW_CERT"
+    rotation_detail: "checked GoDaddy: no ISSUED cert found for CN={{ old_cn }}"
+  when: rotate_ok and chosen_cert == {}
+
+- name: Mark found issued cert
+  set_fact:
+    rotation_status: "FOUND_CERT"
+    rotation_detail: "found ISSUED GoDaddy cert id={{ chosen_cert.certificateId | default('') }} validEndAt={{ chosen_cert.validEndAt | default('') }}"
+  when: rotate_ok and chosen_cert != {}
+
+- name: Download bundle (GoDaddy v1 download that you already use)
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $headers = @{ Authorization = "sso-key {{ godaddy_api_key }}:{{ godaddy_api_secret }}" }
+    $bundle = Invoke-RestMethod -Method Get -Uri "https://api.godaddy.com/v1/certificates/{{ chosen_cert.certificateId }}/download" -Headers $headers
+    $bundle | ConvertTo-Json -Depth 6 | Set-Content -Path "{{ work_dir }}\\{{ safe_cn }}_cert-bundle.json" -Encoding utf8
+  when: rotate_ok and chosen_cert != {}
+
+- name: Write PEM pieces from bundle
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $bundle = Get-Content -Raw -Path "{{ work_dir }}\\{{ safe_cn }}_cert-bundle.json" | ConvertFrom-Json
+    Set-Content -Path "{{ work_dir }}\\server.crt" -Value $bundle.pems.certificate -Encoding ascii
+    Set-Content -Path "{{ work_dir }}\\root.crt" -Value $bundle.pems.root -Encoding ascii
+    Set-Content -Path "{{ work_dir }}\\intermediate.crt" -Value $bundle.pems.intermediate -Encoding ascii
+    if ($bundle.pems.cross) {
+      Set-Content -Path "{{ work_dir }}\\cross.crt" -Value $bundle.pems.cross -Encoding ascii
+    } else {
+      Set-Content -Path "{{ work_dir }}\\cross.crt" -Value '' -Encoding ascii
+    }
+    Set-Content -Path "{{ work_dir }}\\gd_chain.pem" -Value $bundle.pems.intermediate -Encoding ascii
+    if ((Get-Item "{{ work_dir }}\\cross.crt").Length -gt 0) {
+      Add-Content -Path "{{ work_dir }}\\gd_chain.pem" -Value (Get-Content -Path "{{ work_dir }}\\cross.crt") -Encoding ascii
+    }
+    Add-Content -Path "{{ work_dir }}\\gd_chain.pem" -Value $bundle.pems.root -Encoding ascii
+  when: rotate_ok and chosen_cert != {}
+
+- name: Inspect downloaded cert expiry
+  ansible.windows.win_shell: |
+    openssl x509 -in "{{ work_dir }}\\server.crt" -noout -enddate -subject
+  register: new_cert_info
+  when: rotate_ok and chosen_cert != {}
+
+- name: Check cross cert size
+  ansible.windows.win_stat:
+    path: "{{ work_dir }}\\cross.crt"
+  register: cross_stat
+  when: rotate_ok and chosen_cert != {}
+
+- name: Warn if no cross certificate provided
+  debug:
+    msg: "Warning: No cross certificate provided by GoDaddy for CN={{ old_cn }} (file={{ pfx_path }})"
+  when:
+    - rotate_ok
+    - chosen_cert != {}
+    - (cross_stat.stat.size | default(0) | int == 0)
+
+- name: (Optional safety) Fail if downloaded cert CN doesn't match
+  fail:
+    msg: "Downloaded cert CN mismatch for {{ pfx_path }}. Output: {{ new_cert_info.stdout }}"
+  when:
+    - rotate_ok
+    - chosen_cert != {}
+    - ("cn=" ~ (old_cn | lower)) not in (new_cert_info.stdout | lower)
+
+- name: Backup old PFX
+  ansible.windows.win_shell: |
+    Copy-Item -Path "{{ pfx_path }}" -Destination "{{ pfx_path }}.old" -Force
+  when: rotate_ok and chosen_cert != {}
+
+- name: Extract private key from old PFX
+  ansible.windows.win_shell: |
+    openssl pkcs12 -in "{{ pfx_path }}.old" -nodes -legacy -out "{{ work_dir }}\\old.key" -passin pass:"{{ pfx_password }}"
+  when: rotate_ok and chosen_cert != {}
+
+- name: Decide output filename (wildcard CN => _.domain)
+  set_fact:
+    out_pfx: "{{ pfx_dir }}\\{{ safe_cn }}.pfx"
+  when: rotate_ok and chosen_cert != {}
+
+- name: Build new PFX
+  ansible.windows.win_shell: |
+    openssl pkcs12 -macalg SHA1 -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -export -out "{{ out_pfx }}" -inkey "{{ work_dir }}\\old.key" -in "{{ work_dir }}\\server.crt" -certfile "{{ work_dir }}\\gd_chain.pem" -CSP "Microsoft Enhanced RSA and AES Cryptographic Provider" -passout pass:"{{ pfx_password }}"
+  when: rotate_ok and chosen_cert != {}
+
+- name: Validate new PFX expiry
+  ansible.windows.win_shell: |
+    openssl pkcs12 -in "{{ out_pfx }}" -clcerts -nokeys -passin pass:"{{ pfx_password }}" | openssl x509 -noout -subject -enddate
+  register: final_check
+  when: rotate_ok and chosen_cert != {}
+
+- name: Mark rotation complete
+  set_fact:
+    rotation_status: "ROTATED"
+    rotation_detail: "rebuilt PFX at {{ out_pfx }}"
+  when: rotate_ok and chosen_cert != {}
+
+- name: Add to rotation summary
+  set_fact:
+    rotated_certs: "{{ (rotated_certs | default([])) + [ summary_line ] }}"
+  vars:
+    summary_line: "{{ pfx_path }} | CN={{ old_cn }} | out={{ out_pfx }} | new={{ final_check.stdout_lines | join(' | ') }}"
+  when: rotation_status == "ROTATED"
+
+- name: Show result
+  debug:
+    msg:
+      - "Input: {{ pfx_path }}"
+      - "CN: {{ old_cn }} -> output: {{ out_pfx }}"
+      - "Old: {{ old_notafter }}"
+      - "New: {{ final_check.stdout_lines | join(' | ') }}"
+  when: rotate_ok and chosen_cert != {}
