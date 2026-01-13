@@ -12,6 +12,8 @@ Files
 - ansible_compare_godaddy_expiry.yml: Compare local PFX expiry to GoDaddy; writes `pfx_compare_godaddy_expiry.csv`.
 - pfx_compare_item.yml: Per-file compare tasks (included by compare playbook).
 - ansible_cleanup_pfx.yml: Remove `*.pfx.old` backups and clear files from the GoDaddy work directory.
+- ansible_export_pem.yml: Export PEM files from PFX into `./pem`.
+- pfx_export_pem_item.yml: Per-file PEM export tasks (included by export playbook).
 - ansible_audit_pfx_windows.yml: Windows-target audit playbook; writes `pfx_audit_summary.csv`.
 - pfx_audit_item_windows.yml: Per-file Windows audit tasks (included by audit playbook).
 - ansible_rotate_pfx_windows.yml: Windows-target rotation playbook.
@@ -110,6 +112,16 @@ ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "rotate_if_god
 
 Cleanup old backups and work files (clears files in work_dir):
 ansible-playbook -i localhost, -c local ansible_cleanup_pfx.yml
+
+Export PEM files from PFX into `./pem`:
+ansible-playbook -i localhost, -c local ansible_export_pem.yml
+
+Optional export vars:
+- pfx_dir (default ./certs)
+- pem_dir (default ./pem)
+
+PEM naming:
+- Each output file is named with the full PFX filename, e.g. `mycert.pfx_cert.pem`, `mycert.pfx_chain.pem`, `mycert.pfx_fullchain.pem`, `mycert.pfx_key.pem`.
 
 Compare local vs GoDaddy expiry (writes CSV to `./pfx_compare_godaddy_expiry.csv`):
 ansible-playbook -i localhost, -c local ansible_compare_godaddy_expiry.yml

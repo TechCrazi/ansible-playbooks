@@ -1,0 +1,50 @@
+---
+- name: Export PEM files from local PFX
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - "./secrets.yml"
+  vars:
+    pfx_dir: "./certs"
+    pem_dir: "./pem"
+
+  tasks:
+    - name: Ensure PEM output dir
+      file:
+        path: "{{ pem_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Find local PFX files
+      find:
+        paths: "{{ pfx_dir }}"
+        patterns: "*.pfx"
+        file_type: file
+      register: pfx_files
+
+    - name: Fail if no pfx found
+      fail:
+        msg: "No .pfx files found in {{ pfx_dir }}"
+      when: pfx_files.matched | int == 0
+
+    - name: Init export summary
+      set_fact:
+        pem_exports: []
+
+    - name: Process each PFX
+      include_tasks: pfx_export_pem_item.yml
+      loop: "{{ pfx_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      vars:
+        pfx_path: "{{ item.path }}"
+
+    - name: Export summary
+      debug:
+        msg: >-
+          {{
+            (
+              ['Exported PEM files: ' ~ (pem_exports | length | string)]
+              + (pem_exports | default([]))
+            ) | join('\n')
+          }}

@@ -16,3 +16,4 @@ secret.txt
 /certs/*
 /gd_pfx_work/*
 /.vs/*
+/pem/*

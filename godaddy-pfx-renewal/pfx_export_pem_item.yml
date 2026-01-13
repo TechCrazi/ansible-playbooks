@@ -1,0 +1,87 @@
+---
+- name: Init per-file facts
+  set_fact:
+    export_status: "PENDING"
+    export_detail: "not evaluated"
+    safe_base: ""
+    leaf_pem: ""
+    chain_pem: ""
+    fullchain_pem: ""
+    key_pem: ""
+
+- name: Export PEM files from PFX
+  shell: |
+    set -euo pipefail
+    tmp_err="$(mktemp)"
+    cleanup() { rm -f "$tmp_err"; }
+    trap cleanup EXIT
+
+    base="$(basename "{{ pfx_path }}")"
+    safe_base="${base//[^A-Za-z0-9._-]/_}"
+    if [ -z "$safe_base" ]; then
+      safe_base="pfx_export"
+    fi
+
+    leaf="{{ pem_dir }}/${safe_base}_cert.pem"
+    chain="{{ pem_dir }}/${safe_base}_chain.pem"
+    fullchain="{{ pem_dir }}/${safe_base}_fullchain.pem"
+    key="{{ pem_dir }}/${safe_base}_key.pem"
+
+    extract() {
+      openssl pkcs12 -in "{{ pfx_path }}" "$@" -passin pass:"{{ pfx_password }}" 2>"$tmp_err"
+    }
+
+    extract_legacy() {
+      openssl pkcs12 -in "{{ pfx_path }}" -legacy "$@" -passin pass:"{{ pfx_password }}" 2>"$tmp_err"
+    }
+
+    if ! extract_legacy -clcerts -nokeys -out "$leaf"; then
+      extract -clcerts -nokeys -out "$leaf"
+    fi
+
+    if ! extract_legacy -cacerts -nokeys -out "$chain"; then
+      extract -cacerts -nokeys -out "$chain"
+    fi
+
+    if ! extract_legacy -nocerts -nodes -out "$key"; then
+      extract -nocerts -nodes -out "$key"
+    fi
+
+    cat "$leaf" "$chain" > "$fullchain"
+    chmod 0600 "$key"
+    chmod 0644 "$leaf" "$chain" "$fullchain"
+
+    echo "SAFE_BASE=$safe_base"
+    echo "LEAF_PEM=$leaf"
+    echo "CHAIN_PEM=$chain"
+    echo "FULLCHAIN_PEM=$fullchain"
+    echo "KEY_PEM=$key"
+  args:
+    executable: /bin/bash
+  register: export_result
+  changed_when: export_result.rc == 0
+  failed_when: false
+
+- name: Parse export outputs
+  set_fact:
+    safe_base: "{{ (export_result.stdout_lines | default([]) | select('search','^SAFE_BASE=') | list | first | default('') | regex_replace('^SAFE_BASE=','')) }}"
+    leaf_pem: "{{ (export_result.stdout_lines | default([]) | select('search','^LEAF_PEM=') | list | first | default('') | regex_replace('^LEAF_PEM=','')) }}"
+    chain_pem: "{{ (export_result.stdout_lines | default([]) | select('search','^CHAIN_PEM=') | list | first | default('') | regex_replace('^CHAIN_PEM=','')) }}"
+    fullchain_pem: "{{ (export_result.stdout_lines | default([]) | select('search','^FULLCHAIN_PEM=') | list | first | default('') | regex_replace('^FULLCHAIN_PEM=','')) }}"
+    key_pem: "{{ (export_result.stdout_lines | default([]) | select('search','^KEY_PEM=') | list | first | default('') | regex_replace('^KEY_PEM=','')) }}"
+  when: export_result is defined
+
+- name: Mark export status
+  set_fact:
+    export_status: "{{ 'EXPORTED' if export_result.rc == 0 else 'FAILED' }}"
+    export_detail: >-
+      {{
+        'wrote PEM files' if export_result.rc == 0
+        else ('export failed: ' ~ (export_result.stderr | default('') | regex_replace('\s+',' ')))
+      }}
+
+- name: Add to export summary
+  set_fact:
+    pem_exports: "{{ (pem_exports | default([])) + [ summary_line ] }}"
+  vars:
+    summary_line: "{{ pfx_path }} | base={{ safe_base }} | {{ export_status }} | {{ export_detail }}"
