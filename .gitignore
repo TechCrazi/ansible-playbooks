@@ -17,3 +17,7 @@ secret.txt
 /gd_pfx_work/*
 /.vs/*
 /godaddy-pfx-renewal/pem/*
+# PowerShell secrets
+/godaddy-pfx-renewal/powershell/secrets.ps1
+/godaddy-pfx-renewal/powershell/secrets.json
+/godaddy-pfx-renewal/powershell/*.csv
