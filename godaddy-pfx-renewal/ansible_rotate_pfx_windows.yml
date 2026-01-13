@@ -8,6 +8,7 @@
     pfx_dir: "C:\\certs"
     renew_days: 60
     force_rebuild_chain: false
+    rotate_if_godaddy_newer: false
     work_dir: "C:\\gd_pfx_work"
 
   tasks:

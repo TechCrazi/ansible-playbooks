@@ -100,9 +100,13 @@ Optional rotation vars:
 - work_dir (default ./gd_pfx_work)
 - renew_days (default 60)
 - force_rebuild_chain (default false)
+- rotate_if_godaddy_newer (default false)
 
 Force rebuild of GoDaddy chain for all eligible GoDaddy/Starfield certs:
 ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "force_rebuild_chain=true"
+
+Rotate when GoDaddy has a newer cert (even if not expiring soon):
+ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "rotate_if_godaddy_newer=true"
 
 Cleanup old backups and work files (clears files in work_dir):
 ansible-playbook -i localhost, -c local ansible_cleanup_pfx.yml
@@ -136,6 +140,7 @@ Optional Windows vars (same semantics, Windows paths):
 - output_csv (default C:\certs\pfx_audit_summary.csv or C:\certs\pfx_compare_godaddy_expiry.csv)
 - renew_days (default 60)
 - force_rebuild_chain (default false)
+- rotate_if_godaddy_newer (default false)
 
 Outputs
 -------
@@ -155,4 +160,5 @@ Compare status meanings:
 Rotation notes
 --------------
 - Rotation rebuilds PFX using the GoDaddy bundle with intermediate and root, and includes cross cert if provided by GoDaddy.
+- Set `rotate_if_godaddy_newer=true` to rotate only when GoDaddy has a newer cert than local (even if not expiring soon).
 - A summary of rotated certs is printed at the end of `ansible_rotate_pfx.yml` and `ansible_rotate_pfx_windows.yml`.

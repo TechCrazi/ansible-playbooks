@@ -11,6 +11,8 @@
     expiring_soon: false
     rotate_ok: false
     chosen_cert: {}
+    godaddy_newer_line: ""
+    godaddy_newer: "unknown"
     rotation_status: "PENDING"
     rotation_detail: "not evaluated"
 
@@ -63,7 +65,7 @@
 
 - name: Decide rotation eligibility
   set_fact:
-    rotate_ok: "{{ old_read_ok and (old_cn | default('') | length > 0) and (issuer_match | default(false)) and ((expiring_soon | default(false)) or (force_rebuild_chain | default(false) | bool)) }}"
+    rotate_ok: "{{ old_read_ok and (old_cn | default('') | length > 0) and (issuer_match | default(false)) and ((expiring_soon | default(false)) or (force_rebuild_chain | default(false) | bool) or (rotate_if_godaddy_newer | default(false) | bool)) }}"
   when: old_read_ok
 
 - name: Mark skip reason - cert read failed
@@ -82,13 +84,13 @@
   set_fact:
     rotation_status: "SKIP"
     rotation_detail: "not expiring within {{ renew_days }} days (notAfter={{ old_notafter }})"
-  when: old_read_ok and issuer_match and not expiring_soon and not (force_rebuild_chain | default(false) | bool)
+  when: old_read_ok and issuer_match and not expiring_soon and not (force_rebuild_chain | default(false) | bool) and not (rotate_if_godaddy_newer | default(false) | bool)
 
 - name: Mark skip reason - CN not parsed
   set_fact:
     rotation_status: "SKIP"
     rotation_detail: "CN could not be parsed"
-  when: old_read_ok and issuer_match and ((expiring_soon | default(false)) or (force_rebuild_chain | default(false) | bool)) and (old_cn | length == 0)
+  when: old_read_ok and issuer_match and ((expiring_soon | default(false)) or (force_rebuild_chain | default(false) | bool) or (rotate_if_godaddy_newer | default(false) | bool)) and (old_cn | length == 0)
 
 - name: Mark eligible for GoDaddy check
   set_fact:
@@ -96,8 +98,11 @@
     rotation_detail: >-
       {{
         "checking GoDaddy for CN=" ~ old_cn ~
-        ( " (force_rebuild_chain=true)" if (force_rebuild_chain | default(false) | bool) else
-          " (expiring within " ~ renew_days ~ " days)" )
+        (
+          " (force_rebuild_chain=true)" if (force_rebuild_chain | default(false) | bool)
+          else (" (compare GoDaddy expiry)" if (rotate_if_godaddy_newer | default(false) | bool)
+          else " (expiring within " ~ renew_days ~ " days)")
+        )
       }}
   when: rotate_ok
 
@@ -135,6 +140,50 @@
     rotation_status: "FOUND_CERT"
     rotation_detail: "found ISSUED GoDaddy cert id={{ chosen_cert.certificateId | default('') }} validEndAt={{ chosen_cert.validEndAt | default('') }}"
   when: rotate_ok and chosen_cert != {}
+
+- name: Compare local vs GoDaddy expiry (optional)
+  shell: |
+    set -euo pipefail
+    python3 -c $'import sys, datetime as dt\nlocal=sys.argv[1]\nremote=sys.argv[2]\nresult="unknown"\ntry:\n    l=dt.datetime.strptime(local, "%b %d %H:%M:%S %Y %Z")\n    r=remote.replace("Z","+00:00")\n    rdt=None\n    try:\n        rdt=dt.datetime.fromisoformat(r)\n    except Exception:\n        try:\n            rdt=dt.datetime.strptime(r, "%Y-%m-%dT%H:%M:%S%z")\n        except Exception:\n            rdt=None\n    if rdt is None:\n        result="unknown"\n    else:\n        if rdt.tzinfo:\n            rdt=rdt.astimezone(dt.timezone.utc).replace(tzinfo=None)\n        result="true" if l < rdt else "false"\nexcept Exception:\n    result="unknown"\nprint("GODADDY_NEWER="+result)' "{{ old_notafter }}" "{{ chosen_cert.validEndAt | default('') }}"
+  args:
+    executable: /bin/bash
+  register: godaddy_compare
+  changed_when: false
+  failed_when: false
+  when:
+    - rotate_ok
+    - chosen_cert != {}
+    - rotate_if_godaddy_newer | default(false) | bool
+
+- name: Parse GoDaddy newer result
+  set_fact:
+    godaddy_newer_line: "{{ (godaddy_compare.stdout_lines | default([]) | select('search','^GODADDY_NEWER=') | list | first) | default('') }}"
+  when: godaddy_compare is defined
+
+- name: Set GoDaddy newer flag
+  set_fact:
+    godaddy_newer: "{{ (godaddy_newer_line | regex_replace('^GODADDY_NEWER=','')) | default('unknown') }}"
+  when:
+    - rotate_if_godaddy_newer | default(false) | bool
+    - godaddy_newer_line is defined
+
+- name: Default GoDaddy newer flag
+  set_fact:
+    godaddy_newer: "unknown"
+  when:
+    - rotate_if_godaddy_newer | default(false) | bool
+    - godaddy_newer is not defined or (godaddy_newer | length == 0)
+
+- name: Skip if GoDaddy cert is not newer
+  set_fact:
+    rotate_ok: false
+    rotation_status: "SKIP"
+    rotation_detail: "GoDaddy cert not newer than local (local={{ old_notafter }}, godaddy={{ chosen_cert.validEndAt | default('') }})"
+  when:
+    - rotate_ok
+    - chosen_cert != {}
+    - rotate_if_godaddy_newer | default(false) | bool
+    - godaddy_newer != "true"
 
 - name: Download bundle (GoDaddy v1 download that you already use)
   get_url:
