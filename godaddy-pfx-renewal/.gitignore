@@ -17,3 +17,7 @@ secret.txt
 /gd_pfx_work/*
 /.vs/*
 /pem/*
+# PowerShell secrets
+/powershell/secrets.ps1
+/powershell/secrets.json
+/powershell/*.csv

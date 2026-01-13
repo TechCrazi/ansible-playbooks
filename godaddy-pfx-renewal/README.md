@@ -21,6 +21,14 @@ Files
 - ansible_compare_godaddy_expiry_windows.yml: Windows-target compare playbook; writes `pfx_compare_godaddy_expiry.csv`.
 - pfx_compare_item_windows.yml: Per-file Windows compare tasks (included by compare playbook).
 - ansible_cleanup_pfx_windows.yml: Windows-target cleanup playbook.
+- powershell/: PowerShell-only scripts (no Ansible required).
+- powershell/Common.ps1: Shared PowerShell helpers.
+- powershell/audit-pfx.ps1: PowerShell audit (writes CSV).
+- powershell/compare-godaddy-expiry.ps1: PowerShell compare (writes CSV).
+- powershell/rotate-pfx.ps1: PowerShell rotation.
+- powershell/cleanup-pfx.ps1: PowerShell cleanup.
+- powershell/export-pem.ps1: PowerShell PEM export.
+- powershell/secrets.sample.ps1: Template for PowerShell secrets.
 - secrets.yml: Local secrets (GoDaddy customer ID, API key/secret, PFX password). Ignored by git.
 - pfx_audit_summary.csv / pfx_compare_godaddy_expiry.csv: CSV outputs written by the playbooks.
 - .gitignore: excludes `secrets.yml`.
@@ -38,6 +46,10 @@ Windows targets (for *_windows playbooks):
 - PowerShell 5.1+ (or PowerShell 7).
 - OpenSSL installed and in PATH (used for rotation and validation).
 - PFX files present on the Windows host (default `C:\certs`, override with `pfx_dir`).
+
+PowerShell-only scripts:
+- Windows PowerShell 5.1 or PowerShell 7.
+- No OpenSSL/Ansible required (scripts use .NET).
 
 Install
 -------
@@ -76,6 +88,9 @@ customer_id: "..."
 godaddy_api_key: "..."
 godaddy_api_secret: "..."
 pfx_password: "..."
+
+For PowerShell-only scripts, copy the template and fill it:
+- `powershell\secrets.sample.ps1` -> `powershell\secrets.ps1`
 
 Usage
 -----
@@ -153,6 +168,32 @@ Optional Windows vars (same semantics, Windows paths):
 - renew_days (default 60)
 - force_rebuild_chain (default false)
 - rotate_if_godaddy_newer (default false)
+
+PowerShell-only (no Ansible)
+--------------------------------
+Copy secrets template and fill it (scripts read secrets.ps1 or secrets.json, no dot-sourcing):
+- powershell\secrets.sample.ps1 -> powershell\secrets.ps1
+
+Audit (writes CSV):
+powershell -ExecutionPolicy Bypass -File powershell\audit-pfx.ps1
+
+Compare local vs GoDaddy expiry (writes CSV):
+powershell -ExecutionPolicy Bypass -File powershell\compare-godaddy-expiry.ps1
+
+Rotate PFX files:
+powershell -ExecutionPolicy Bypass -File powershell\rotate-pfx.ps1
+
+Rotate when GoDaddy has newer certs (default behavior):
+powershell -ExecutionPolicy Bypass -File powershell\rotate-pfx.ps1 -RotateIfGodaddyNewer:$true
+
+Force rotate all GoDaddy/Starfield certs (ignores expiry checks):
+powershell -ExecutionPolicy Bypass -File powershell\rotate-pfx.ps1 -ForceRotateAll
+
+Cleanup old backups and work files:
+powershell -ExecutionPolicy Bypass -File powershell\cleanup-pfx.ps1
+
+Export PEM files from PFX:
+powershell -ExecutionPolicy Bypass -File powershell\export-pem.ps1
 
 Outputs
 -------
