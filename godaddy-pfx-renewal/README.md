@@ -82,7 +82,7 @@ winhost ansible_host=WIN_HOST_IP ansible_user=USER ansible_password=PASS ansible
 
 Secrets
 -------
- - Find your GoDaddy customer_id from a shopper ID, shoppers ID can be found on GoDaddy portal (one-time lookup):
+ - Find your GoDaddy customer_id from GoDaddy shoppers ID, shoppers ID can be found on the GoDaddy portal (one-time lookup):
     ```bash
     export API_KEY=YOUR_API_KEY
     export API_SECRET=YOUR_API_SECRET
