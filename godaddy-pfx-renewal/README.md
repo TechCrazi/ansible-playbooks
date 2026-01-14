@@ -41,7 +41,7 @@ Control node (Linux/macOS/WSL):
 - GoDaddy API credentials with access to the customer certificates endpoint.
 - For Windows playbooks: install the `ansible.windows` collection.
 
-Windows targets (for *_windows playbooks):
+Windows targets (for *-win playbooks):
 - WinRM enabled and reachable.
 - PowerShell 5.1+ (or PowerShell 7).
 - OpenSSL installed and in PATH (used for rotation and validation).
@@ -84,10 +84,12 @@ Secrets
 -------
  - Find your GoDaddy customer_id from a shopper ID, shoppers ID can be found on GoDaddy portal (one-time lookup):
     ```bash
-    # Pull Customer ID
+    export API_KEY=YOUR_API_KEY
+    export API_SECRET=YOUR_API_SECRET
+    export SHOPPERS_ID=YOUR_SHOPPERS_ID
     curl -s -X GET \
       -H "Authorization: sso-key ${API_KEY}:${API_SECRET}" \
-      "https://api.godaddy.com/v1/shoppers/REPLACE_WITH_SHOPPER_ID?includes=customerId" \
+      "https://api.godaddy.com/v1/shoppers/${SHOPPERS_ID}?includes=customerId" \
     | jq .
     ```
 
