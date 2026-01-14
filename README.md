@@ -2,6 +2,6 @@
 
 Collections of Ansible playbooks.
 
-- godaddy-pfx-renewal: GoDaddy PFX audit/rotate/compare playbooks (Linux/macOS + Windows).
-    - powersehll: Powershell files with native Windows tools for GoDaddy PFX audit/rotate/compare.
+- godaddy-ssl-renewal: GoDaddy SSL API V2 audit/rotate/compare playbooks (Linux/macOS + Windows).
+    - powersehll: Powershell files with native Windows tools for GoDaddy SSL API V2 audit/rotate/compare.
 - semaphore: Repo for semaphore playbooks.
