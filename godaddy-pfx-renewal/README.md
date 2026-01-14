@@ -31,7 +31,7 @@ Files
 - powershell/secrets.sample.ps1: Template for PowerShell secrets.
 - secrets.yml: Local secrets (GoDaddy customer ID, API key/secret, PFX password). Ignored by git.
 - pfx_audit_summary.csv / pfx_compare_godaddy_expiry.csv: CSV outputs written by the playbooks.
-- .gitignore: excludes `secrets.yml`.
+
 
 Prereqs
 -------
@@ -82,15 +82,14 @@ winhost ansible_host=WIN_HOST_IP ansible_user=USER ansible_password=PASS ansible
 
 Secrets
 -------
-Edit `secrets.yml` with your values:
----
-customer_id: "..."
-godaddy_api_key: "..."
-godaddy_api_secret: "..."
-pfx_password: "..."
+Create/Edit `secrets.yml` with your values:
 
-For PowerShell-only scripts, copy the template and fill it:
-- `powershell\secrets.sample.ps1` -> `powershell\secrets.ps1`
+```yaml
+customer_id: "YOUR_CUSTOMER_ID"
+godaddy_api_key: "YOUR_GODADDY_API_KEY"
+godaddy_api_secret: "YOUR_GODADDY_API_SECRET"
+pfx_password: "YOUR_PFX_PASSWORD"
+```
 
 Usage
 -----
