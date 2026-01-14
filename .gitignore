@@ -69,3 +69,10 @@ secret.ps1
 /godaddy-ssl-renewal/powershell/pem/*.*
 /godaddy-ssl-renewal/powershell/pem/*.pem
 /godaddy-ssl-renewal/powershell/.vs/*
+
+
+# /semaphore
+/semaphore/notes.txt
+/semaphore/info.txt
+/semaphore/readme.txt
+/semaphore/backup/*
