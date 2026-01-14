@@ -72,8 +72,25 @@ secret.ps1
 
 
 # /semaphore
+/semaphore/ansible_notes.txt
+/semaphore/github_notes.txt
+/semaphore/secrets.json
+/semaphore/secrets.yml
+/semaphore/secrets.yaml
+/semaphore/secrets.txt
+/semaphore/secrets.ps1
+/semaphore/secret.json
+/semaphore/secret.yaml
+/semaphore/secret.yml
+/semaphore/secret.txt
+/semaphore/secret.ps1
 /semaphore/notes.txt
 /semaphore/info.txt
 /semaphore/readme.txt
+/semaphore/*.csv
+/semaphore/*.log
+/semaphore/*.env
+/semaphore/*.txt
 /semaphore/.DS_Store
+/semaphore/.vs/*
 /semaphore/backup/*
