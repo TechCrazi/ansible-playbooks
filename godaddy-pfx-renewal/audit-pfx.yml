@@ -1,22 +1,22 @@
 ---
-- name: Audit local PFX files on Windows for common issues
-  hosts: windows
+- name: Audit local PFX files for common issues
+  hosts: localhost
   gather_facts: false
   vars_files:
     - "./secrets.yml"
   vars:
-    pfx_dir: "C:\\certs"
+    pfx_dir: "./certs"
     warn_days: 30
     show_all: false
     show_each: false
     summary_header: false
-    output_csv: "{{ pfx_dir }}\\pfx_audit_summary.csv"
+    output_csv: "./pfx_audit_summary.csv"
     write_csv: true
     print_summary: false
 
   tasks:
     - name: Find local PFX files
-      ansible.windows.win_find:
+      find:
         paths: "{{ pfx_dir }}"
         patterns: "*.pfx"
         file_type: file
@@ -33,7 +33,7 @@
         pfx_issues: []
 
     - name: Process each PFX
-      include_tasks: pfx_audit_item_windows.yml
+      include_tasks: audit-pfx-task.yml
       loop: "{{ pfx_files.files }}"
       loop_control:
         label: "{{ item.path }}"
@@ -131,7 +131,8 @@
       when: write_csv | default(true) | bool and (pfx_results | length > 0)
 
     - name: Write CSV output
-      ansible.windows.win_copy:
+      copy:
         dest: "{{ output_csv }}"
-        content: "{{ 'file_name,path,cn,subject,issuer,issuer_cn,issuer_vendor,serial,not_before,not_after,days_to_exp,expired,expiring_label,sig_alg,pubkey_alg,pubkey_bits,sha1_fingerprint,sha256_fingerprint,san_dns,key_usage,ext_key_usage,basic_constraints,has_private_key,read_ok,chain_count,chain_root_count,chain_intermediate_count,has_root,has_intermediate,chain_subjects,chain_issuers\r\n' ~ (csv_lines | default([]) | join('\r\n')) ~ '\r\n' }}"
+        content: "{{ 'file_name,path,cn,subject,issuer,issuer_cn,issuer_vendor,serial,not_before,not_after,days_to_exp,expired,expiring_label,sig_alg,pubkey_alg,pubkey_bits,sha1_fingerprint,sha256_fingerprint,san_dns,key_usage,ext_key_usage,basic_constraints,has_private_key,read_ok,chain_count,chain_root_count,chain_intermediate_count,has_root,has_intermediate,chain_subjects,chain_issuers\n' ~ (csv_lines | default([]) | join('\n')) ~ '\n' }}"
+        mode: "0644"
       when: write_csv | default(true) | bool and (pfx_results | length > 0)

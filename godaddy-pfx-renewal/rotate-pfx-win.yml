@@ -1,22 +1,29 @@
 ---
-- name: Export PEM files from local PFX
-  hosts: localhost
+- name: Refresh GoDaddy certs and rebuild PFX locally (Windows)
+  hosts: windows
   gather_facts: false
   vars_files:
     - "./secrets.yml"
   vars:
-    pfx_dir: "./certs"
-    pem_dir: "./pem"
+    pfx_dir: "C:\\certs"
+    renew_days: 60
+    force_rebuild_chain: false
+    rotate_if_godaddy_newer: false
+    pfx_strong_encryption: false
+    work_dir: "C:\\gd_pfx_work"
 
   tasks:
-    - name: Ensure PEM output dir
-      file:
-        path: "{{ pem_dir }}"
+    - name: Init rotation summary
+      set_fact:
+        rotated_certs: []
+
+    - name: Ensure work dir
+      ansible.windows.win_file:
+        path: "{{ work_dir }}"
         state: directory
-        mode: "0700"
 
     - name: Find local PFX files
-      find:
+      ansible.windows.win_find:
         paths: "{{ pfx_dir }}"
         patterns: "*.pfx"
         file_type: file
@@ -27,24 +34,20 @@
         msg: "No .pfx files found in {{ pfx_dir }}"
       when: pfx_files.matched | int == 0
 
-    - name: Init export summary
-      set_fact:
-        pem_exports: []
-
     - name: Process each PFX
-      include_tasks: pfx_export_pem_item.yml
+      include_tasks: rotate-pfx-task-win.yml
       loop: "{{ pfx_files.files }}"
       loop_control:
         label: "{{ item.path }}"
       vars:
         pfx_path: "{{ item.path }}"
 
-    - name: Export summary
+    - name: Rotation summary
       debug:
         msg: >-
           {{
             (
-              ['Exported PEM files: ' ~ (pem_exports | length | string)]
-              + (pem_exports | default([]))
+              ['Rotated certs: ' ~ (rotated_certs | length | string)]
+              + (rotated_certs | default([]))
             ) | join('\n')
           }}

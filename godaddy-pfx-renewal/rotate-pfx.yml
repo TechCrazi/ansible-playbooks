@@ -1,16 +1,16 @@
 ---
-- name: Refresh GoDaddy certs and rebuild PFX locally (Windows)
-  hosts: windows
-  gather_facts: false
+- name: Refresh GoDaddy certs and rebuild PFX locally
+  hosts: localhost
+  gather_facts: true
   vars_files:
     - "./secrets.yml"
   vars:
-    pfx_dir: "C:\\certs"
+    pfx_dir: "./certs"
     renew_days: 60
     force_rebuild_chain: false
     rotate_if_godaddy_newer: false
     pfx_strong_encryption: false
-    work_dir: "C:\\gd_pfx_work"
+    work_dir: "./gd_pfx_work"
 
   tasks:
     - name: Init rotation summary
@@ -18,12 +18,13 @@
         rotated_certs: []
 
     - name: Ensure work dir
-      ansible.windows.win_file:
+      file:
         path: "{{ work_dir }}"
         state: directory
+        mode: "0700"
 
     - name: Find local PFX files
-      ansible.windows.win_find:
+      find:
         paths: "{{ pfx_dir }}"
         patterns: "*.pfx"
         file_type: file
@@ -35,7 +36,7 @@
       when: pfx_files.matched | int == 0
 
     - name: Process each PFX
-      include_tasks: pfx_rotate_item_windows.yml
+      include_tasks: rotate-pfx-task.yml
       loop: "{{ pfx_files.files }}"
       loop_control:
         label: "{{ item.path }}"

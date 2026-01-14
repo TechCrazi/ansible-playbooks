@@ -5,22 +5,22 @@ Playbooks and task includes for auditing, comparing, and rotating local PFX file
 
 Files
 -----
-- ansible_audit_pfx.yml: Audit local PFX files; writes detailed CSV `pfx_audit_summary.csv`.
-- pfx_audit_item.yml: Per-file audit tasks (included by audit playbook).
-- ansible_rotate_pfx.yml: Rotate eligible PFX files by downloading GoDaddy bundle and rebuilding PFX with full chain.
-- pfx_rotate_item.yml: Per-file rotation tasks (included by rotation playbook).
-- ansible_compare_godaddy_expiry.yml: Compare local PFX expiry to GoDaddy; writes `pfx_compare_godaddy_expiry.csv`.
-- pfx_compare_item.yml: Per-file compare tasks (included by compare playbook).
-- ansible_cleanup_pfx.yml: Remove `*.pfx.old` backups and clear files from the GoDaddy work directory.
-- ansible_export_pem.yml: Export PEM files from PFX into `./pem`.
-- pfx_export_pem_item.yml: Per-file PEM export tasks (included by export playbook).
-- ansible_audit_pfx_windows.yml: Windows-target audit playbook; writes `pfx_audit_summary.csv`.
-- pfx_audit_item_windows.yml: Per-file Windows audit tasks (included by audit playbook).
-- ansible_rotate_pfx_windows.yml: Windows-target rotation playbook.
-- pfx_rotate_item_windows.yml: Per-file Windows rotation tasks (included by rotation playbook).
-- ansible_compare_godaddy_expiry_windows.yml: Windows-target compare playbook; writes `pfx_compare_godaddy_expiry.csv`.
-- pfx_compare_item_windows.yml: Per-file Windows compare tasks (included by compare playbook).
-- ansible_cleanup_pfx_windows.yml: Windows-target cleanup playbook.
+- audit-pfx.yml: Audit local PFX files; writes detailed CSV `pfx_audit_summary.csv`.
+- audit-pfx-task.yml: Per-file audit tasks (included by audit playbook).
+- rotate-pfx.yml: Rotate eligible PFX files by downloading GoDaddy bundle and rebuilding PFX with full chain.
+- rotate-pfx-task.yml: Per-file rotation tasks (included by rotation playbook).
+- compare-godaddy-expiry.yml: Compare local PFX expiry to GoDaddy; writes `pfx_compare_godaddy_expiry.csv`.
+- compare-godaddy-expiry-task.yml: Per-file compare tasks (included by compare playbook).
+- cleanup-pfx.yml: Remove `*.pfx.old` backups and clear files from the GoDaddy work directory.
+- export-pem.yml: Export PEM files from PFX into `./pem`.
+- export-pem-task.yml: Per-file PEM export tasks (included by export playbook).
+- audit-pfx-win.yml: Windows-target audit playbook; writes `pfx_audit_summary.csv`.
+- audit-pfx-task-win.yml: Per-file Windows audit tasks (included by audit playbook).
+- rotate-pfx-win.yml: Windows-target rotation playbook.
+- rotate-pfx-task-win.yml: Per-file Windows rotation tasks (included by rotation playbook).
+- compare-godaddy-expiry-win.yml: Windows-target compare playbook; writes `pfx_compare_godaddy_expiry.csv`.
+- compare-godaddy-expiry-task-win.yml: Per-file Windows compare tasks (included by compare playbook).
+- cleanup-pfx-win.yml: Windows-target cleanup playbook.
 - powershell/: PowerShell-only scripts (no Ansible required).
 - powershell/Common.ps1: Shared PowerShell helpers.
 - powershell/audit-pfx.ps1: PowerShell audit (writes CSV).
@@ -98,7 +98,7 @@ Place PFX files in `./certs` on Linux/macOS or `C:\certs` on Windows targets (or
 
 Linux/macOS (local control node):
 Audit PFX files (writes CSV to `./pfx_audit_summary.csv`):
-ansible-playbook -i localhost, -c local ansible_audit_pfx.yml
+ansible-playbook -i localhost, -c local audit-pfx.yml
 
 Optional audit vars:
 - pfx_dir (default ./certs)
@@ -110,7 +110,7 @@ Optional audit vars:
 - show_all (default false)
 
 Rotate PFX files (GoDaddy/Starfield issuers only, expiring within 60 days):
-ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml
+ansible-playbook -i localhost, -c local rotate-pfx.yml
 
 Optional rotation vars:
 - pfx_dir (default ./certs)
@@ -121,19 +121,19 @@ Optional rotation vars:
 - pfx_strong_encryption (default false; set true to use AES-256-CBC + SHA256 for PFX)
 
 Force rebuild of GoDaddy chain for all eligible GoDaddy/Starfield certs:
-ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "force_rebuild_chain=true"
+ansible-playbook -i localhost, -c local rotate-pfx.yml -e "force_rebuild_chain=true"
 
 Rotate when GoDaddy has a newer cert (even if not expiring soon):
-ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "rotate_if_godaddy_newer=true"
+ansible-playbook -i localhost, -c local rotate-pfx.yml -e "rotate_if_godaddy_newer=true"
 
 Use stronger PFX encryption (AES-256-CBC + SHA256):
-ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "pfx_strong_encryption=true"
+ansible-playbook -i localhost, -c local rotate-pfx.yml -e "pfx_strong_encryption=true"
 
 Cleanup old backups and work files (clears files in work_dir):
-ansible-playbook -i localhost, -c local ansible_cleanup_pfx.yml
+ansible-playbook -i localhost, -c local cleanup-pfx.yml
 
 Export PEM files from PFX into `./pem`:
-ansible-playbook -i localhost, -c local ansible_export_pem.yml
+ansible-playbook -i localhost, -c local export-pem.yml
 
 Optional export vars:
 - pfx_dir (default ./certs)
@@ -143,7 +143,7 @@ PEM naming:
 - Each output file is named with the full PFX filename, e.g. `mycert.pfx_cert.pem`, `mycert.pfx_chain.pem`, `mycert.pfx_fullchain.pem`, `mycert.pfx_key.pem`.
 
 Compare local vs GoDaddy expiry (writes CSV to `./pfx_compare_godaddy_expiry.csv`):
-ansible-playbook -i localhost, -c local ansible_compare_godaddy_expiry.yml
+ansible-playbook -i localhost, -c local compare-godaddy-expiry.yml
 
 Optional compare vars:
 - pfx_dir (default ./certs)
@@ -155,170 +155,170 @@ Optional compare vars:
 
 Examples (Linux/macOS local)
 -----------------------------------------
-- Audit examples (ansible_audit_pfx.yml)
+- Audit examples (audit-pfx.yml)
   - Scans all PFX files in ./certs and writes ./pfx_audit_summary.csv.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml
+    ansible-playbook -i localhost, -c local audit-pfx.yml
     ```
 
   - Scans a different PFX folder.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "pfx_dir=/path/to/pfx"
+    ansible-playbook -i localhost, -c local audit-pfx.yml -e "pfx_dir=/path/to/pfx"
     ```
 
   - Marks certs expiring in 45 days or less.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "warn_days=45"
+    ansible-playbook -i localhost, -c local audit-pfx.yml -e "warn_days=45"
     ```
 
   - Writes the CSV report to a custom file path.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "output_csv=./reports/audit.csv"
+    ansible-playbook -i localhost, -c local audit-pfx.yml -e "output_csv=./reports/audit.csv"
     ```
 
   - Runs the scan but does not create a CSV file.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "write_csv=false"
+    ansible-playbook -i localhost, -c local audit-pfx.yml -e "write_csv=false"
     ```
 
   - Prints one summary line per cert to the console.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "print_summary=true"
+    ansible-playbook -i localhost, -c local audit-pfx.yml -e "print_summary=true"
     ```
 
   - Adds a header row to the console summary output.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "summary_header=true"
+    ansible-playbook -i localhost, -c local audit-pfx.yml -e "summary_header=true"
     ```
 
   - Prints full details for every cert to the console (large output).
     ```bash
-    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "show_all=true"
+    ansible-playbook -i localhost, -c local audit-pfx.yml -e "show_all=true"
     ```
 
-- Rotate examples (ansible_rotate_pfx.yml)
+- Rotate examples (rotate-pfx.yml)
   - Rotates GoDaddy/Starfield certs that expire within 60 days.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml
+    ansible-playbook -i localhost, -c local rotate-pfx.yml
     ```
 
   - Only rotates certs expiring within 30 days.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "renew_days=30"
+    ansible-playbook -i localhost, -c local rotate-pfx.yml -e "renew_days=30"
     ```
 
   - Rebuilds PFX files even if they are not expiring (useful to fix missing chain).
     ```bash
-    ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "force_rebuild_chain=true"
+    ansible-playbook -i localhost, -c local rotate-pfx.yml -e "force_rebuild_chain=true"
     ```
 
   - Rotates only when GoDaddy has a newer cert than the local file.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "rotate_if_godaddy_newer=true"
+    ansible-playbook -i localhost, -c local rotate-pfx.yml -e "rotate_if_godaddy_newer=true"
     ```
 
   - Uses stronger PFX encryption (AES-256-CBC for key/cert, SHA-256 for integrity, 2048 PBKDF iterations).
     ```bash
-    ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "pfx_strong_encryption=true"
+    ansible-playbook -i localhost, -c local rotate-pfx.yml -e "pfx_strong_encryption=true"
     ```
 
   - Reads PFX files from a different folder.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "pfx_dir=/path/to/pfx"
+    ansible-playbook -i localhost, -c local rotate-pfx.yml -e "pfx_dir=/path/to/pfx"
     ```
 
   - Uses a different temp folder for downloads and build files.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "work_dir=/path/to/work"
+    ansible-playbook -i localhost, -c local rotate-pfx.yml -e "work_dir=/path/to/work"
     ```
 
-- Compare examples (ansible_compare_godaddy_expiry.yml)
+- Compare examples (compare-godaddy-expiry.yml)
   - Compares local expiry vs GoDaddy and writes ./pfx_compare_godaddy_expiry.csv.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_compare_godaddy_expiry.yml
+    ansible-playbook -i localhost, -c local compare-godaddy-expiry.yml
     ```
 
   - Compares certs from a different folder.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_compare_godaddy_expiry.yml -e "pfx_dir=/path/to/pfx"
+    ansible-playbook -i localhost, -c local compare-godaddy-expiry.yml -e "pfx_dir=/path/to/pfx"
     ```
 
   - Writes the comparison CSV to a custom file path.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_compare_godaddy_expiry.yml -e "output_csv=./reports/compare.csv"
+    ansible-playbook -i localhost, -c local compare-godaddy-expiry.yml -e "output_csv=./reports/compare.csv"
     ```
 
   - Runs the comparison but does not write a CSV file.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_compare_godaddy_expiry.yml -e "write_csv=false"
+    ansible-playbook -i localhost, -c local compare-godaddy-expiry.yml -e "write_csv=false"
     ```
 
   - Runs quietly (no per-cert console lines).
     ```bash
-    ansible-playbook -i localhost, -c local ansible_compare_godaddy_expiry.yml -e "show_details=false"
+    ansible-playbook -i localhost, -c local compare-godaddy-expiry.yml -e "show_details=false"
     ```
 
   - Prints skipped items and the reason they were skipped.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_compare_godaddy_expiry.yml -e "show_skips=true"
+    ansible-playbook -i localhost, -c local compare-godaddy-expiry.yml -e "show_skips=true"
     ```
 
-- Export PEM examples (ansible_export_pem.yml)
+- Export PEM examples (export-pem.yml)
   - Exports PEM files to ./pem (4 files per PFX).
     ```bash
-    ansible-playbook -i localhost, -c local ansible_export_pem.yml
+    ansible-playbook -i localhost, -c local export-pem.yml
     ```
 
   - Exports from a different PFX folder.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_export_pem.yml -e "pfx_dir=/path/to/pfx"
+    ansible-playbook -i localhost, -c local export-pem.yml -e "pfx_dir=/path/to/pfx"
     ```
 
   - Writes PEM files to a different output folder.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_export_pem.yml -e "pem_dir=./pem_out"
+    ansible-playbook -i localhost, -c local export-pem.yml -e "pem_dir=./pem_out"
     ```
 
-- Cleanup examples (ansible_cleanup_pfx.yml)
+- Cleanup examples (cleanup-pfx.yml)
   - Deletes *.pfx.old files and clears files in ./gd_pfx_work.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_cleanup_pfx.yml
+    ansible-playbook -i localhost, -c local cleanup-pfx.yml
     ```
 
   - Removes backups from a different PFX folder.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_cleanup_pfx.yml -e "pfx_dir=/path/to/pfx"
+    ansible-playbook -i localhost, -c local cleanup-pfx.yml -e "pfx_dir=/path/to/pfx"
     ```
 
   - Clears files in a different work folder.
     ```bash
-    ansible-playbook -i localhost, -c local ansible_cleanup_pfx.yml -e "work_dir=/path/to/work"
+    ansible-playbook -i localhost, -c local cleanup-pfx.yml -e "work_dir=/path/to/work"
     ```
 
 - Windows targets:
   - Audit PFX files (writes CSV to C:\certs\pfx_audit_summary.csv by default).
     ```bash
-    ansible-playbook -i windows.ini ansible_audit_pfx_windows.yml
+    ansible-playbook -i windows.ini audit-pfx-win.yml
     ```
 
   - Rotate PFX files on the Windows host.
     ```bash
-    ansible-playbook -i windows.ini ansible_rotate_pfx_windows.yml
+    ansible-playbook -i windows.ini rotate-pfx-win.yml
     ```
 
   - Rotate with stronger PFX encryption (AES-256-CBC + SHA256).
     ```bash
-    ansible-playbook -i windows.ini ansible_rotate_pfx_windows.yml -e "pfx_strong_encryption=true"
+    ansible-playbook -i windows.ini rotate-pfx-win.yml -e "pfx_strong_encryption=true"
     ```
 
   - Cleanup old backups and work files on the Windows host.
     ```bash
-    ansible-playbook -i windows.ini ansible_cleanup_pfx_windows.yml
+    ansible-playbook -i windows.ini cleanup-pfx-win.yml
     ```
 
   - Compare local vs GoDaddy expiry (writes CSV to C:\certs\pfx_compare_godaddy_expiry.csv by default).
     ```bash
-    ansible-playbook -i windows.ini ansible_compare_godaddy_expiry_windows.yml
+    ansible-playbook -i windows.ini compare-godaddy-expiry-win.yml
     ```
 
 Optional Windows vars (same semantics, Windows paths):
@@ -377,4 +377,4 @@ Rotation notes
 --------------
 - Rotation rebuilds PFX using the GoDaddy bundle with intermediate and root, and includes cross cert if provided by GoDaddy.
 - Set `rotate_if_godaddy_newer=true` to rotate only when GoDaddy has a newer cert than local (even if not expiring soon).
-- A summary of rotated certs is printed at the end of `ansible_rotate_pfx.yml` and `ansible_rotate_pfx_windows.yml`.
+- A summary of rotated certs is printed at the end of `rotate-pfx.yml` and `rotate-pfx-win.yml`.

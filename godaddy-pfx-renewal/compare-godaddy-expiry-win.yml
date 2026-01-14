@@ -43,7 +43,7 @@
         compare_results: []
 
     - name: Process each PFX
-      include_tasks: pfx_compare_item_windows.yml
+      include_tasks: compare-godaddy-expiry-task-win.yml
       loop: "{{ pfx_files.files }}"
       loop_control:
         label: "{{ item.path }}"
