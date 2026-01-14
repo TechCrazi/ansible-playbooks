@@ -153,7 +153,7 @@ Optional compare vars:
 - show_skips (default false)
 
 
-Eexamples (Linux/macOS local)
+Examples (Linux/macOS local)
 -----------------------------------------
 Each line below is a full command you can copy/paste. Replace paths as needed.
 
