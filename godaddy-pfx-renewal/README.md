@@ -155,9 +155,7 @@ Optional compare vars:
 
 Examples (Linux/macOS local)
 -----------------------------------------
-Each example includes a short description and a copy/paste command.
-
-Audit examples (ansible_audit_pfx.yml)
+- Audit examples (ansible_audit_pfx.yml)
 Scans all PFX files in ./certs and writes ./pfx_audit_summary.csv.
 ```bash
 ansible-playbook -i localhost, -c local ansible_audit_pfx.yml
