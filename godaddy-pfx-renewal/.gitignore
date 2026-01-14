@@ -21,3 +21,4 @@ secret.txt
 /powershell/secrets.ps1
 /powershell/secrets.json
 /powershell/*.csv
+*.gitignore

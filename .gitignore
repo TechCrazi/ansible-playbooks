@@ -1,3 +1,4 @@
+*.gitignore
 ansible_notes.txt
 github_notes.txt
 secrets.json
