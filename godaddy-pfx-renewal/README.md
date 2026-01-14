@@ -91,6 +91,16 @@ godaddy_api_secret: "YOUR_GODADDY_API_SECRET"
 pfx_password: "YOUR_PFX_PASSWORD"
 ```
 
+
+Find your GoDaddy customer_id from a shopper ID, shoppers ID can be found on GoDaddy portal (one-time lookup):
+```bash
+# Pull Customer ID
+curl -s -X GET \
+  -H "Authorization: sso-key ${API_KEY}:${API_SECRET}" \
+  "https://api.godaddy.com/v1/shoppers/${SHOPPERS_ID}?includes=customerId" \
+| jq .
+```
+
 Usage
 -----
 Place PFX files in `./certs` on Linux/macOS or `C:\certs` on Windows targets (or set `pfx_dir`).
