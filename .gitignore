@@ -75,4 +75,5 @@ secret.ps1
 /semaphore/notes.txt
 /semaphore/info.txt
 /semaphore/readme.txt
+/semaphore/.DS_Store
 /semaphore/backup/*
