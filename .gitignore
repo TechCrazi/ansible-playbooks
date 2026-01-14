@@ -5,10 +5,12 @@ secrets.json
 secrets.yml
 secrets.yaml
 secrets.txt
+secrets.ps1
 secret.json
 secret.yaml
 secret.yml
 secret.txt
+secret.ps1
 *.csv
 *.log
 *.env
