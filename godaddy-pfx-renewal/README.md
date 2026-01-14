@@ -82,24 +82,26 @@ winhost ansible_host=WIN_HOST_IP ansible_user=USER ansible_password=PASS ansible
 
 Secrets
 -------
-Create/Edit `secrets.yml` with your values:
+ - Find your GoDaddy customer_id from a shopper ID, shoppers ID can be found on GoDaddy portal (one-time lookup):
+    ```bash
+    # Pull Customer ID
+    curl -s -X GET \
+      -H "Authorization: sso-key ${API_KEY}:${API_SECRET}" \
+      "https://api.godaddy.com/v1/shoppers/REPLACE_WITH_SHOPPER_ID?includes=customerId" \
+    | jq .
+    ```
 
-```yaml
-customer_id: "YOUR_CUSTOMER_ID"
-godaddy_api_key: "YOUR_GODADDY_API_KEY"
-godaddy_api_secret: "YOUR_GODADDY_API_SECRET"
-pfx_password: "YOUR_PFX_PASSWORD"
-```
+ - Create/Edit `secrets.yml` with your values:
+
+    ```yaml
+    customer_id: "YOUR_CUSTOMER_ID"
+    godaddy_api_key: "YOUR_GODADDY_API_KEY"
+    godaddy_api_secret: "YOUR_GODADDY_API_SECRET"
+    pfx_password: "YOUR_PFX_PASSWORD"
+    ```
 
 
-Find your GoDaddy customer_id from a shopper ID, shoppers ID can be found on GoDaddy portal (one-time lookup):
-```bash
-# Pull Customer ID
-curl -s -X GET \
-  -H "Authorization: sso-key ${API_KEY}:${API_SECRET}" \
-  "https://api.godaddy.com/v1/shoppers/${SHOPPERS_ID}?includes=customerId" \
-| jq .
-```
+
 
 Usage
 -----
