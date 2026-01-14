@@ -156,45 +156,45 @@ Optional compare vars:
 Examples (Linux/macOS local)
 -----------------------------------------
 - Audit examples (ansible_audit_pfx.yml)
-    Scans all PFX files in ./certs and writes ./pfx_audit_summary.csv.
+  - Scans all PFX files in ./certs and writes ./pfx_audit_summary.csv.
     ```bash
     ansible-playbook -i localhost, -c local ansible_audit_pfx.yml
     ```
 
-Scans a different PFX folder.
-```bash
-ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "pfx_dir=/path/to/pfx"
-```
+  - Scans a different PFX folder.
+    ```bash
+    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "pfx_dir=/path/to/pfx"
+    ```
 
-Marks certs expiring in 45 days or less.
-```bash
-ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "warn_days=45"
-```
+  - Marks certs expiring in 45 days or less.
+    ```bash
+    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "warn_days=45"
+    ```
 
-Writes the CSV report to a custom file path.
-```bash
-ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "output_csv=./reports/audit.csv"
-```
+  - Writes the CSV report to a custom file path.
+    ```bash
+    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "output_csv=./reports/audit.csv"
+    ```
 
-Runs the scan but does not create a CSV file.
-```bash
-ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "write_csv=false"
-```
+  - Runs the scan but does not create a CSV file.
+    ```bash
+    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "write_csv=false"
+    ```
 
-Prints one summary line per cert to the console.
-```bash
-ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "print_summary=true"
-```
+  - Prints one summary line per cert to the console.
+    ```bash
+    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "print_summary=true"
+    ```
 
-Adds a header row to the console summary output.
-```bash
-ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "summary_header=true"
-```
+  - Adds a header row to the console summary output.
+    ```bash
+    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "summary_header=true"
+    ```
 
-Prints full details for every cert to the console (large output).
-```bash
-ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "show_all=true"
-```
+  - Prints full details for every cert to the console (large output).
+    ```bash
+    ansible-playbook -i localhost, -c local ansible_audit_pfx.yml -e "show_all=true"
+    ```
 
 Rotate examples (ansible_rotate_pfx.yml)
 Rotates GoDaddy/Starfield certs that expire within 60 days.
