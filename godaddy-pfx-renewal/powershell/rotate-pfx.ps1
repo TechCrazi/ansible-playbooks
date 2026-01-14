@@ -5,6 +5,7 @@ param(
   [switch]$ForceRebuildChain = $false,
   [bool]$RotateIfGodaddyNewer = $true,
   [switch]$ForceRotateAll = $false,
+  [string]$CspName = "Microsoft Enhanced RSA and AES Cryptographic Provider",
   [string]$SecretsPath = (Join-Path $PSScriptRoot 'secrets.ps1'),
   [string]$CustomerId,
   [string]$GodaddyApiKey,
@@ -184,6 +185,11 @@ try {
 $now = (Get-Date).ToUniversalTime()
 $rotated = @()
 
+$certutilCspArgs = @()
+if (-not [string]::IsNullOrWhiteSpace($CspName)) {
+  $certutilCspArgs = @('-csp', $CspName)
+}
+
 foreach ($file in $pfxFiles) {
   $status = 'PENDING'
   $detail = 'not evaluated'
@@ -290,6 +296,9 @@ foreach ($file in $pfxFiles) {
       Copy-Item -Path $file.FullName -Destination "$($file.FullName).old" -Force
 
       $canCopy = $newLeaf.PSObject.Methods.Name -contains 'CopyWithPrivateKey'
+      if (-not [string]::IsNullOrWhiteSpace($CspName)) {
+        $canCopy = $false
+      }
       if ($canCopy) {
         $privateKey = Get-PrivateKeyForCert -Cert $leaf
         if (-not $privateKey) {
@@ -319,21 +328,25 @@ foreach ($file in $pfxFiles) {
         $beforeRoot = Get-StoreThumbprints -StorePath 'Cert:\CurrentUser\Root'
 
         try {
-          & certutil -f -user -p $PfxPassword -importpfx $file.FullName | Out-Null
+          $importArgs = $certutilCspArgs + @('-f', '-user', '-p', $PfxPassword, '-importpfx', $file.FullName)
+          & certutil @importArgs | Out-Null
           $afterMy = Get-StoreThumbprints -StorePath 'Cert:\CurrentUser\My'
           $importedMy = $afterMy | Where-Object { $beforeMy -notcontains $_ }
 
           $leafFile = Join-Path $tmpDir 'leaf.cer'
           Write-CertToFile -Cert $newLeaf -Path $leafFile
-          & certutil -f -user -addstore My $leafFile | Out-Null
+          $addLeafArgs = $certutilCspArgs + @('-f', '-user', '-addstore', 'My', $leafFile)
+          & certutil @addLeafArgs | Out-Null
           $newThumb = $newLeaf.Thumbprint
-          & certutil -user -repairstore My $newThumb | Out-Null
+          $repairArgs = $certutilCspArgs + @('-user', '-repairstore', 'My', $newThumb)
+          & certutil @repairArgs | Out-Null
 
           foreach ($cert in $chainCerts) {
             $chainFile = Join-Path $tmpDir ("chain_" + [guid]::NewGuid().ToString('N') + '.cer')
             Write-CertToFile -Cert $cert -Path $chainFile
             $store = if ($cert.Subject -eq $cert.Issuer) { 'Root' } else { 'CA' }
-            & certutil -f -user -addstore $store $chainFile | Out-Null
+            $addChainArgs = $certutilCspArgs + @('-f', '-user', '-addstore', $store, $chainFile)
+            & certutil @addChainArgs | Out-Null
           }
 
           $afterCA = Get-StoreThumbprints -StorePath 'Cert:\CurrentUser\CA'
@@ -341,7 +354,8 @@ foreach ($file in $pfxFiles) {
           $newCA = $afterCA | Where-Object { $beforeCA -notcontains $_ }
           $newRoot = $afterRoot | Where-Object { $beforeRoot -notcontains $_ }
 
-          & certutil -user -exportPFX -p $PfxPassword -chain My $newThumb $outPath | Out-Null
+          $exportArgs = $certutilCspArgs + @('-user', '-exportPFX', '-p', $PfxPassword, '-chain', 'My', $newThumb, $outPath)
+          & certutil @exportArgs | Out-Null
           if (-not (Test-Path $outPath)) {
             throw 'certutil export failed'
           }

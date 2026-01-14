@@ -262,10 +262,18 @@
     out_pfx: "{{ pfx_dir }}/{{ (old_cn | regex_replace('^\\*', '_')) }}.pfx"
   when: rotate_ok and chosen_cert != {}
 
+- name: Choose PFX encryption args
+  set_fact:
+    pfx_crypto_args: >-
+      {{ '-macalg SHA256 -keypbe AES-256-CBC -certpbe AES-256-CBC -iter 2048'
+         if (pfx_strong_encryption | default(false)) else
+         '-macalg SHA1 -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES' }}
+  when: rotate_ok and chosen_cert != {}
+
 - name: Build new PFX
   shell: |
     set -euo pipefail
-    openssl pkcs12 -macalg SHA1 -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -export \
+    openssl pkcs12 {{ pfx_crypto_args }} -export \
       -out "{{ out_pfx }}" \
       -inkey "{{ work_dir }}/old.key" \
       -in "{{ work_dir }}/server.crt" \

@@ -9,6 +9,7 @@
     renew_days: 60
     force_rebuild_chain: false
     rotate_if_godaddy_newer: false
+    pfx_strong_encryption: false
     work_dir: "./gd_pfx_work"
 
   tasks:

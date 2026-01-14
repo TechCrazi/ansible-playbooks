@@ -82,6 +82,7 @@ Options:
 - `-ForceRebuildChain` (rebuild PFX even if not expiring)
 - `-RotateIfGodaddyNewer` (bool, default: `$true`; use `-RotateIfGodaddyNewer:$false` to disable)
 - `-ForceRotateAll` (force all GoDaddy/Starfield PFX to rebuild)
+- `-CspName` (default: `Microsoft Enhanced RSA and AES Cryptographic Provider`; pass `-CspName ""` to skip CSP)
 - `-SecretsPath` (default: `secrets.ps1`)
 - `-CustomerId`, `-GodaddyApiKey`, `-GodaddyApiSecret`, `-PfxPassword`
 
@@ -95,6 +96,7 @@ powershell -ExecutionPolicy Bypass -File .\rotate-pfx.ps1 -RotateIfGodaddyNewer:
 Notes:
 - Creates `.pfx.old` backups before overwriting.
 - Uses `certutil` and the CurrentUser certificate store to attach private keys.
+- PFX encryption algorithm is the Windows default from `certutil` (cannot be set to AES/SHA in PowerShell 5.1). Use the Ansible/OpenSSL path for AES-256/SHA256 PFX output.
 
 ### export-pem.ps1
 Exports PEM files from each PFX. Produces 4 files per PFX:

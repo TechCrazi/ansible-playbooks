@@ -118,12 +118,16 @@ Optional rotation vars:
 - renew_days (default 60)
 - force_rebuild_chain (default false)
 - rotate_if_godaddy_newer (default false)
+- pfx_strong_encryption (default false; set true to use AES-256-CBC + SHA256 for PFX)
 
 Force rebuild of GoDaddy chain for all eligible GoDaddy/Starfield certs:
 ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "force_rebuild_chain=true"
 
 Rotate when GoDaddy has a newer cert (even if not expiring soon):
 ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "rotate_if_godaddy_newer=true"
+
+Use stronger PFX encryption (AES-256-CBC + SHA256):
+ansible-playbook -i localhost, -c local ansible_rotate_pfx.yml -e "pfx_strong_encryption=true"
 
 Cleanup old backups and work files (clears files in work_dir):
 ansible-playbook -i localhost, -c local ansible_cleanup_pfx.yml
@@ -168,6 +172,7 @@ Optional Windows vars (same semantics, Windows paths):
 - renew_days (default 60)
 - force_rebuild_chain (default false)
 - rotate_if_godaddy_newer (default false)
+- pfx_strong_encryption (default false; set true to use AES-256-CBC + SHA256 for PFX)
 
 PowerShell-only (no Ansible)
 --------------------------------

@@ -275,9 +275,17 @@
     out_pfx: "{{ pfx_dir }}\\{{ safe_cn }}.pfx"
   when: rotate_ok and chosen_cert != {}
 
+- name: Choose PFX encryption args
+  set_fact:
+    pfx_crypto_args: >-
+      {{ '-macalg SHA256 -keypbe AES-256-CBC -certpbe AES-256-CBC -iter 2048'
+         if (pfx_strong_encryption | default(false)) else
+         '-macalg SHA1 -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES' }}
+  when: rotate_ok and chosen_cert != {}
+
 - name: Build new PFX
   ansible.windows.win_shell: |
-    openssl pkcs12 -macalg SHA1 -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -export -out "{{ out_pfx }}" -inkey "{{ work_dir }}\\old.key" -in "{{ work_dir }}\\server.crt" -certfile "{{ work_dir }}\\gd_chain.pem" -CSP "Microsoft Enhanced RSA and AES Cryptographic Provider" -passout pass:"{{ pfx_password }}"
+    openssl pkcs12 {{ pfx_crypto_args }} -export -out "{{ out_pfx }}" -inkey "{{ work_dir }}\\old.key" -in "{{ work_dir }}\\server.crt" -certfile "{{ work_dir }}\\gd_chain.pem" -CSP "Microsoft Enhanced RSA and AES Cryptographic Provider" -passout pass:"{{ pfx_password }}"
   when: rotate_ok and chosen_cert != {}
 
 - name: Validate new PFX expiry
